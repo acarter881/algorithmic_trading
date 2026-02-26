@@ -280,11 +280,7 @@ class TestParseLeaderboard:
         assert len(entries) == 8
 
     def test_json_wrapped_in_dict(self) -> None:
-        data = json.dumps({
-            "data": [
-                {"model_name": "Test", "rank": 1, "arena_score": 1000, "votes": 5000}
-            ]
-        })
+        data = json.dumps({"data": [{"model_name": "Test", "rank": 1, "arena_score": 1000, "votes": 5000}]})
         entries = parse_leaderboard(data)
         assert len(entries) == 1
 
