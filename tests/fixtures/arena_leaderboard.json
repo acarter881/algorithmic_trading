@@ -1,0 +1,90 @@
+[
+  {
+    "model_name": "Claude Opus 4.6",
+    "organization": "Anthropic",
+    "rank": 1,
+    "rank_ub": 1,
+    "rank_lb": 1,
+    "arena_score": 1350,
+    "ci_lower": 1346,
+    "ci_upper": 1353,
+    "votes": 25000
+  },
+  {
+    "model_name": "GPT-5",
+    "organization": "OpenAI",
+    "rank": 2,
+    "rank_ub": 2,
+    "rank_lb": 1,
+    "arena_score": 1340,
+    "ci_lower": 1337,
+    "ci_upper": 1344,
+    "votes": 30000
+  },
+  {
+    "model_name": "Gemini 3.0 Ultra",
+    "organization": "Google",
+    "rank": 3,
+    "rank_ub": 4,
+    "rank_lb": 2,
+    "arena_score": 1320,
+    "ci_lower": 1315,
+    "ci_upper": 1325,
+    "votes": 18000
+  },
+  {
+    "model_name": "Llama 4 405B",
+    "organization": "Meta",
+    "rank": 4,
+    "rank_ub": 5,
+    "rank_lb": 3,
+    "arena_score": 1280,
+    "ci_lower": 1274,
+    "ci_upper": 1286,
+    "votes": 12000
+  },
+  {
+    "model_name": "Grok-3",
+    "organization": "xAI",
+    "rank": 5,
+    "rank_ub": 6,
+    "rank_lb": 4,
+    "arena_score": 1260,
+    "ci_lower": 1253,
+    "ci_upper": 1267,
+    "votes": 8000
+  },
+  {
+    "model_name": "Mistral Ultra",
+    "organization": "Mistral",
+    "rank": 6,
+    "rank_ub": 7,
+    "rank_lb": 5,
+    "arena_score": 1240,
+    "ci_lower": 1232,
+    "ci_upper": 1248,
+    "votes": 5000
+  },
+  {
+    "model_name": "DeepSeek-V4",
+    "organization": "DeepSeek",
+    "rank": 7,
+    "rank_ub": 8,
+    "rank_lb": 6,
+    "arena_score": 1220,
+    "ci_lower": 1210,
+    "ci_upper": 1230,
+    "votes": 3000
+  },
+  {
+    "model_name": "NewModel-Preview",
+    "organization": "Startup",
+    "rank": 8,
+    "rank_ub": 10,
+    "rank_lb": 6,
+    "arena_score": 1200,
+    "ci_lower": 1185,
+    "ci_upper": 1220,
+    "votes": 200
+  }
+]

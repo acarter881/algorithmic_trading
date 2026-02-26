@@ -1,0 +1,9 @@
+rank,rank_stylectrl,model,arena_score,95_pct_ci,votes,organization,license,knowledge_cutoff,url
+1,1,Claude Opus 4.6,1350,+3/-4,25000,Anthropic,Proprietary,,https://anthropic.com
+2,2,GPT-5,1340,+4/-3,30000,OpenAI,Proprietary,,https://openai.com
+3,4,Gemini 3.0 Ultra,1320,+5/-5,18000,Google,Proprietary,,https://google.com
+4,5,Llama 4 405B,1280,+6/-6,12000,Meta,Llama,,https://meta.com
+5,6,Grok-3,1260,+7/-5,8000,xAI,Proprietary,,https://x.ai
+6,7,Mistral Ultra,1240,+8/-7,5000,Mistral,Apache 2.0,,https://mistral.ai
+7,8,DeepSeek-V4,1220,+10/-8,3000,DeepSeek,MIT,,https://deepseek.com
+8,10,NewModel-Preview,1200,+20/-15,200,Startup,Proprietary,,https://startup.ai
