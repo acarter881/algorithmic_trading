@@ -1,0 +1,9 @@
+# Arena leaderboard monitor signal source configuration.
+
+arena_monitor:
+  primary_url: "https://arena.ai/leaderboard/text/overall-no-style-control"
+  fallback_urls:
+    - "https://lmarena.ai/leaderboard/text/overall-no-style-control"
+  poll_interval_seconds: 30
+  request_timeout_seconds: 15.0
+  max_consecutive_failures: 5

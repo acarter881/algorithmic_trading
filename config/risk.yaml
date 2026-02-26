@@ -1,0 +1,14 @@
+# Risk management configuration.
+
+global:
+  max_portfolio_exposure_pct: 0.60
+  max_daily_loss_pct: 0.05
+  kill_switch_enabled: false
+  reconciliation_interval_seconds: 300
+
+per_strategy:
+  leaderboard_alpha:
+    max_position_per_contract: 100.00
+    max_position_per_event: 250.00
+    max_strategy_loss: 200.00
+    min_edge_multiplier: 2.5
