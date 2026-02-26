@@ -65,6 +65,8 @@ module = [
     "thefuzz.*",
     "apscheduler.*",
     "discord.*",
+    "cryptography.*",
+    "websockets.*",
 ]
 ignore_missing_imports = true
 
