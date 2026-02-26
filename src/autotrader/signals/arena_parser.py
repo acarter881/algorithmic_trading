@@ -114,11 +114,7 @@ def _find_leaderboard_array(obj: Any, depth: int = 0) -> list[dict[str, Any]] | 
     if depth > 8:
         return None
 
-    if (
-        isinstance(obj, list)
-        and len(obj) > 5
-        and all(isinstance(item, dict) for item in obj[:3])
-    ):
+    if isinstance(obj, list) and len(obj) > 5 and all(isinstance(item, dict) for item in obj[:3]):
         # Heuristic: an array of dicts with a "model_name" or "model" key
         sample = obj[0]
         if any(k in sample for k in ("model_name", "model", "name", "key", "full_name")):
@@ -202,9 +198,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
             rank_lb = rank
 
         score = _safe_float(cell_texts[col_map["score"]]) if "score" in col_map else 0.0
-        ci_lower, ci_upper = (
-            _parse_ci(cell_texts[col_map["ci"]]) if "ci" in col_map else (0.0, 0.0)
-        )
+        ci_lower, ci_upper = _parse_ci(cell_texts[col_map["ci"]]) if "ci" in col_map else (0.0, 0.0)
         votes = _safe_int(cell_texts[col_map["votes"]]) if "votes" in col_map else 0
         org = cell_texts[col_map["org"]] if "org" in col_map else ""
 
@@ -362,9 +356,7 @@ def _looks_like_csv(content: str) -> bool:
     if not content or content.lstrip().startswith(("{", "[", "<", "!")):
         return False
     first_line = content.split("\n", 1)[0].lower()
-    return "," in first_line and any(
-        keyword in first_line for keyword in ("rank", "model", "score", "elo", "arena")
-    )
+    return "," in first_line and any(keyword in first_line for keyword in ("rank", "model", "score", "elo", "arena"))
 
 
 # ── Parsing Helpers ───────────────────────────────────────────────────

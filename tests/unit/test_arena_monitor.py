@@ -56,11 +56,13 @@ def _snapshot(entries: list[LeaderboardEntry], url: str = "https://test.com") ->
 
 class TestLeaderboardSnapshot:
     def test_top_model(self) -> None:
-        snap = _snapshot([
-            _entry("A", rank_ub=3),
-            _entry("B", rank_ub=1),
-            _entry("C", rank_ub=2),
-        ])
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=3),
+                _entry("B", rank_ub=1),
+                _entry("C", rank_ub=2),
+            ]
+        )
         assert snap.top_model == "B"
 
     def test_top_model_empty(self) -> None:
@@ -68,10 +70,12 @@ class TestLeaderboardSnapshot:
         assert snap.top_model is None
 
     def test_top_org(self) -> None:
-        snap = _snapshot([
-            _entry("A", org="OrgA", rank_ub=2),
-            _entry("B", org="OrgB", rank_ub=1),
-        ])
+        snap = _snapshot(
+            [
+                _entry("A", org="OrgA", rank_ub=2),
+                _entry("B", org="OrgB", rank_ub=1),
+            ]
+        )
         assert snap.top_org == "OrgB"
 
     def test_by_model_name(self) -> None:
@@ -166,27 +170,35 @@ class TestSignalGeneration:
         assert signals == []
 
     def test_ranking_change_signal(self) -> None:
-        self.monitor._previous_snapshot = _snapshot([
-            _entry("A", rank=1, rank_ub=1),
-            _entry("B", rank=2, rank_ub=2),
-        ])
-        curr = _snapshot([
-            _entry("A", rank=2, rank_ub=3),
-            _entry("B", rank=1, rank_ub=1),
-        ])
+        self.monitor._previous_snapshot = _snapshot(
+            [
+                _entry("A", rank=1, rank_ub=1),
+                _entry("B", rank=2, rank_ub=2),
+            ]
+        )
+        curr = _snapshot(
+            [
+                _entry("A", rank=2, rank_ub=3),
+                _entry("B", rank=1, rank_ub=1),
+            ]
+        )
         signals = self.monitor._generate_signals(curr)
         ranking_signals = [s for s in signals if s.event_type == "ranking_change"]
         assert len(ranking_signals) == 2
 
     def test_new_leader_signal(self) -> None:
-        self.monitor._previous_snapshot = _snapshot([
-            _entry("A", rank_ub=1),
-            _entry("B", rank_ub=2),
-        ])
-        curr = _snapshot([
-            _entry("A", rank_ub=2),
-            _entry("B", rank_ub=1),
-        ])
+        self.monitor._previous_snapshot = _snapshot(
+            [
+                _entry("A", rank_ub=1),
+                _entry("B", rank_ub=2),
+            ]
+        )
+        curr = _snapshot(
+            [
+                _entry("A", rank_ub=2),
+                _entry("B", rank_ub=1),
+            ]
+        )
         signals = self.monitor._generate_signals(curr)
         leader_signals = [s for s in signals if s.event_type == "new_leader"]
         assert len(leader_signals) == 1
@@ -394,9 +406,11 @@ class TestFetching:
 class TestSnapshotSerialization:
     def test_snapshot_to_dict(self) -> None:
         monitor = ArenaMonitor()
-        snap = _snapshot([
-            _entry("Claude", org="Anthropic", rank=1, rank_ub=1, score=1350, votes=25000),
-        ])
+        snap = _snapshot(
+            [
+                _entry("Claude", org="Anthropic", rank=1, rank_ub=1, score=1350, votes=25000),
+            ]
+        )
         data = monitor.snapshot_to_dict(snap)
         assert "entries" in data
         assert len(data["entries"]) == 1
