@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "kalshi-python>=2.1.4",
+    "cryptography>=42.0",
     "websockets>=13.0",
     "sqlalchemy>=2.0",
     "pydantic>=2.0",
