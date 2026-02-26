@@ -1,0 +1,11 @@
+# Paper trading (demo) environment overrides.
+
+kalshi:
+  environment: demo
+
+logging:
+  level: DEBUG
+  json_output: false
+
+database:
+  url: "sqlite:///autotrader_paper.db"

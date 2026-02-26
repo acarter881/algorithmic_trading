@@ -1,0 +1,34 @@
+# Base configuration — shared across all environments.
+# Environment-specific overrides go in paper.yaml or live.yaml.
+# Secrets go in .env (gitignored).
+
+kalshi:
+  environment: demo
+  request_timeout_seconds: 30.0
+  max_retries: 3
+  rate_limit_buffer_pct: 0.10
+
+arena_monitor:
+  primary_url: "https://arena.ai/leaderboard/text/overall-no-style-control"
+  fallback_urls:
+    - "https://lmarena.ai/leaderboard/text/overall-no-style-control"
+  poll_interval_seconds: 30
+  request_timeout_seconds: 15.0
+  max_consecutive_failures: 5
+
+database:
+  url: "sqlite:///autotrader.db"
+  echo: false
+
+logging:
+  level: INFO
+  json_output: true
+  log_dir: logs
+  rotate_days: 90
+
+discord:
+  enabled: false
+  alert_on_trades: true
+  alert_on_signals: true
+  alert_on_errors: true
+  large_trade_threshold: 50.00
