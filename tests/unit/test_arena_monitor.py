@@ -319,7 +319,7 @@ class TestFetching:
         good_response.raise_for_status = MagicMock()
 
         async def mock_get(url: str) -> MagicMock:
-            if url.startswith("https://arena.ai"):
+            if "github" in url:
                 raise httpx.RequestError("Connection refused")
             return good_response
 
@@ -327,7 +327,7 @@ class TestFetching:
             snapshot = await monitor._fetch_leaderboard()
 
         assert snapshot is not None
-        assert snapshot.source_url == "https://lmarena.ai/leaderboard/text/overall-no-style-control"
+        assert snapshot.source_url == "https://arena.ai/leaderboard/text/overall-no-style-control"
         await monitor.teardown()
 
     @pytest.mark.asyncio

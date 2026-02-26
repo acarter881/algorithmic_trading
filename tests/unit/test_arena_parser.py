@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from autotrader.signals.arena_parser import (
+    _looks_like_csv,
     _parse_ci,
     _parse_rank_range,
     _safe_float,
     _safe_int,
     extract_next_data,
+    parse_csv,
     parse_html_table,
     parse_json_entries,
     parse_leaderboard,
@@ -42,6 +44,80 @@ def json_entries() -> list[dict[str, object]]:
 @pytest.fixture
 def next_data_html() -> str:
     return (FIXTURES / "arena_next_data.html").read_text()
+
+
+@pytest.fixture
+def csv_leaderboard() -> str:
+    return (FIXTURES / "arena_leaderboard.csv").read_text()
+
+
+# ── CSV Parsing ───────────────────────────────────────────────────────
+
+
+class TestParseCsv:
+    def test_basic_csv_parsing(self, csv_leaderboard: str) -> None:
+        entries = parse_csv(csv_leaderboard)
+        assert len(entries) == 8
+        assert entries[0].model_name == "Claude Opus 4.6"
+        assert entries[0].organization == "Anthropic"
+        assert entries[0].score == 1350.0
+        assert entries[0].votes == 25000
+
+    def test_rank_stylectrl_is_rank_ub(self, csv_leaderboard: str) -> None:
+        """rank_stylectrl column should be used as rank_ub."""
+        entries = parse_csv(csv_leaderboard)
+        # Claude: rank=1, rank_stylectrl=1
+        assert entries[0].rank == 1
+        assert entries[0].rank_ub == 1
+        # Gemini: rank=3, rank_stylectrl=4
+        gemini = next(e for e in entries if e.model_name == "Gemini 3.0 Ultra")
+        assert gemini.rank == 3
+        assert gemini.rank_ub == 4
+
+    def test_ci_from_csv(self, csv_leaderboard: str) -> None:
+        entries = parse_csv(csv_leaderboard)
+        # Claude: +3/-4
+        assert entries[0].ci_upper == 3.0
+        assert entries[0].ci_lower == -4.0
+
+    def test_preliminary_detection(self, csv_leaderboard: str) -> None:
+        entries = parse_csv(csv_leaderboard)
+        preview = next(e for e in entries if e.model_name == "NewModel-Preview")
+        assert preview.is_preliminary is True
+        assert entries[0].is_preliminary is False
+
+    def test_empty_csv(self) -> None:
+        assert parse_csv("") == []
+
+    def test_header_only_csv(self) -> None:
+        assert parse_csv("rank,model,score\n") == []
+
+    def test_minimal_csv(self) -> None:
+        csv_data = "rank,rank_stylectrl,model,arena_score,votes,organization\n1,1,TestModel,1300,5000,TestOrg\n"
+        entries = parse_csv(csv_data)
+        assert len(entries) == 1
+        assert entries[0].model_name == "TestModel"
+        assert entries[0].rank_ub == 1
+        assert entries[0].score == 1300.0
+        assert entries[0].votes == 5000
+        assert entries[0].organization == "TestOrg"
+
+
+class TestLooksLikeCsv:
+    def test_csv_header(self) -> None:
+        assert _looks_like_csv("rank,model,score\n1,Claude,1350\n") is True
+
+    def test_json_not_csv(self) -> None:
+        assert _looks_like_csv('[{"model": "Claude"}]') is False
+
+    def test_html_not_csv(self) -> None:
+        assert _looks_like_csv("<html><body>") is False
+
+    def test_empty_not_csv(self) -> None:
+        assert _looks_like_csv("") is False
+
+    def test_plain_text_without_keywords(self) -> None:
+        assert _looks_like_csv("hello,world,foo") is False
 
 
 # ── JSON Parsing ──────────────────────────────────────────────────────
@@ -184,6 +260,12 @@ class TestParseHtmlTable:
 
 
 class TestParseLeaderboard:
+    def test_parses_csv(self, csv_leaderboard: str) -> None:
+        entries = parse_leaderboard(csv_leaderboard)
+        assert len(entries) == 8
+        assert entries[0].model_name == "Claude Opus 4.6"
+        assert entries[0].rank_ub == 1
+
     def test_parses_json(self, json_leaderboard: str) -> None:
         entries = parse_leaderboard(json_leaderboard)
         assert len(entries) == 8

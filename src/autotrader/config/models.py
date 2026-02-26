@@ -38,9 +38,12 @@ class KalshiConfig(BaseModel):
 class ArenaMonitorConfig(BaseModel):
     """Arena leaderboard monitor settings."""
 
-    primary_url: str = "https://arena.ai/leaderboard/text/overall-no-style-control"
+    primary_url: str = (
+        "https://raw.githubusercontent.com/fboulnois/llm-leaderboard-csv/main/csv/lmarena_text.csv"
+    )
     fallback_urls: list[str] = Field(
         default_factory=lambda: [
+            "https://arena.ai/leaderboard/text/overall-no-style-control",
             "https://lmarena.ai/leaderboard/text/overall-no-style-control",
         ]
     )

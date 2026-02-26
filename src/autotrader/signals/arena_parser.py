@@ -3,15 +3,22 @@
 Supports multiple extraction strategies to handle the Arena site's
 data format, which may change over time:
 
-1. JSON API response — structured JSON from an API endpoint
-2. ``__NEXT_DATA__`` — JSON blob embedded by Next.js in the page HTML
-3. HTML table fallback — scrape the rendered ``<table>`` element
+1. CSV from fboulnois/llm-leaderboard-csv (most reliable machine-readable source)
+2. JSON API response — structured JSON from an API endpoint
+3. ``__NEXT_DATA__`` — JSON blob embedded by Next.js in the page HTML
+4. HTML table fallback — scrape the rendered ``<table>`` element
 
 The parser normalises all formats into a list of ``LeaderboardEntry`` objects.
+
+Note: The lmarena.ai site renders via JavaScript (Next.js), so the HTML
+table strategy only works if the page is server-side rendered.  The CSV
+strategy is preferred for reliability.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from typing import Any
@@ -220,12 +227,109 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
     return entries
 
 
-def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
-    """Parse leaderboard data from either HTML or JSON content.
+def parse_csv(content: str) -> list[LeaderboardEntry]:
+    """Parse leaderboard entries from CSV content.
 
-    Tries JSON parsing first, then ``__NEXT_DATA__``, then HTML table.
+    Supports the format from ``fboulnois/llm-leaderboard-csv``::
+
+        rank,rank_stylectrl,model,arena_score,95_pct_ci,votes,organization,...
+
+    The ``rank_stylectrl`` column corresponds to Rank(UB) — the upper bound
+    of the bootstrap confidence interval on rank (with Style Control OFF,
+    this equals the ``final_ranking`` field in the source pickle data).
     """
-    # Strategy 1: Raw JSON response
+    entries: list[LeaderboardEntry] = []
+
+    reader = csv.DictReader(io.StringIO(content))
+    if not reader.fieldnames:
+        return []
+
+    # Normalise header names (lowercase, strip)
+    field_map = {f.lower().strip(): f for f in reader.fieldnames}
+
+    for row in reader:
+        # Resolve model name
+        name = ""
+        for key in ("model", "model_name", "name"):
+            if key in field_map:
+                name = row.get(field_map[key], "").strip()
+                if name:
+                    break
+        if not name:
+            continue
+
+        # Resolve rank fields — rank_stylectrl is the Rank(UB) we need
+        rank = _safe_int(row.get(field_map.get("rank", "rank"), ""))
+        rank_ub = rank  # default to display rank
+        for key in ("rank_stylectrl", "rank_ub", "final_ranking"):
+            if key in field_map:
+                val = _safe_int(row.get(field_map[key], ""))
+                if val > 0:
+                    rank_ub = val
+                    break
+
+        # Resolve score
+        score = 0.0
+        for key in ("arena_score", "score", "elo", "rating"):
+            if key in field_map:
+                score = _safe_float(row.get(field_map[key], ""))
+                if score > 0:
+                    break
+
+        # Parse CI from "95_pct_ci" or similar (format: "+5/-5")
+        ci_lower, ci_upper = 0.0, 0.0
+        for key in ("95_pct_ci", "95% ci", "ci"):
+            if key in field_map:
+                ci_lower, ci_upper = _parse_ci(row.get(field_map[key], ""))
+                break
+
+        # Votes
+        votes = 0
+        for key in ("votes", "num_battles"):
+            if key in field_map:
+                votes = _safe_int(row.get(field_map[key], ""))
+                if votes > 0:
+                    break
+
+        # Organization
+        org = ""
+        for key in ("organization", "org", "provider"):
+            if key in field_map:
+                org = row.get(field_map[key], "").strip()
+                if org:
+                    break
+
+        entries.append(
+            LeaderboardEntry(
+                model_name=name,
+                organization=org,
+                rank=rank,
+                rank_ub=rank_ub,
+                rank_lb=rank,  # CSV doesn't have separate lower bound
+                score=score,
+                ci_lower=ci_lower,
+                ci_upper=ci_upper,
+                votes=votes,
+                is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
+            )
+        )
+
+    logger.debug("parsed_csv_entries", count=len(entries))
+    return entries
+
+
+def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
+    """Parse leaderboard data from CSV, JSON, or HTML content.
+
+    Tries strategies in order: CSV, JSON, ``__NEXT_DATA__``, HTML table.
+    """
+    # Strategy 1: CSV (most reliable for fboulnois/llm-leaderboard-csv)
+    if _looks_like_csv(html_or_json):
+        entries = parse_csv(html_or_json)
+        if entries:
+            return entries
+
+    # Strategy 2: Raw JSON response
     try:
         data = json.loads(html_or_json)
         if isinstance(data, list):
@@ -242,15 +346,25 @@ def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
     except (json.JSONDecodeError, ValueError):
         pass  # Not JSON, try HTML strategies
 
-    # Strategy 2: __NEXT_DATA__ embedded JSON
+    # Strategy 3: __NEXT_DATA__ embedded JSON
     next_data = extract_next_data(html_or_json)
     if next_data:
         entries = parse_json_entries(next_data)
         if entries:
             return entries
 
-    # Strategy 3: HTML table
+    # Strategy 4: HTML table
     return parse_html_table(html_or_json)
+
+
+def _looks_like_csv(content: str) -> bool:
+    """Heuristic: does the content look like CSV data?"""
+    if not content or content.lstrip().startswith(("{", "[", "<", "!")):
+        return False
+    first_line = content.split("\n", 1)[0].lower()
+    return "," in first_line and any(
+        keyword in first_line for keyword in ("rank", "model", "score", "elo", "arena")
+    )
 
 
 # ── Parsing Helpers ───────────────────────────────────────────────────
