@@ -294,10 +294,7 @@ class RiskManager:
             return RiskCheckResult(
                 check_name="portfolio_exposure",
                 verdict=RiskVerdict.REJECTED,
-                reason=(
-                    "Cannot evaluate portfolio exposure: "
-                    f"invalid balance={balance}c"
-                ),
+                reason=(f"Cannot evaluate portfolio exposure: invalid balance={balance}c"),
             )
 
         current_exposure = self._total_exposure_cents()

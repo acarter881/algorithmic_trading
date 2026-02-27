@@ -198,7 +198,6 @@ class TestTradingLoopTick:
         assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
 
-
     async def test_tick_refreshes_portfolio_before_risk_evaluation(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
