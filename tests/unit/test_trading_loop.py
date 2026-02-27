@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,6 +13,8 @@ from autotrader.config.models import (
     AppConfig,
     ArenaMonitorConfig,
     DiscordConfig,
+    Environment,
+    KalshiConfig,
     LeaderboardAlphaConfig,
 )
 from autotrader.core.loop import TradingLoop
@@ -84,6 +86,22 @@ class TestTradingLoopInit:
         await loop.initialize()
         assert loop.execution_engine is not None
         assert loop.execution_engine.mode == ExecutionMode.PAPER
+        await loop.shutdown()
+
+    async def test_initialize_live_mode_configures_kalshi_client(self, monkeypatch) -> None:
+        mock_client = MagicMock()
+        monkeypatch.setattr("autotrader.core.loop.KalshiAPIClient", MagicMock(return_value=mock_client))
+
+        config = _config()
+        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
+
+        loop = TradingLoop(config)
+        await loop.initialize()
+
+        mock_client.connect.assert_called_once_with(private_key_pem=ANY)
+        assert loop.execution_engine is not None
+        assert loop.execution_engine.mode == ExecutionMode.LIVE
+        assert loop.execution_engine._api is mock_client
         await loop.shutdown()
 
     async def test_not_running_initially(self) -> None:

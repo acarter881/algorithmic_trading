@@ -16,10 +16,12 @@ and supports graceful shutdown via :meth:`stop`.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from autotrader.api.client import KalshiAPIClient
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
@@ -86,7 +88,13 @@ class TradingLoop:
 
         # Execution engine
         mode = ExecutionMode.LIVE if self._config.kalshi.environment.value == "production" else ExecutionMode.PAPER
-        self._engine = ExecutionEngine(mode=mode, fee_calculator=self._fee_calc)
+        if mode == ExecutionMode.LIVE:
+            client = KalshiAPIClient(self._config.kalshi)
+            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+            client.connect(private_key_pem=private_key_pem)
+            self._engine = ExecutionEngine(mode=mode, api_client=client, fee_calculator=self._fee_calc)
+        else:
+            self._engine = ExecutionEngine(mode=mode, fee_calculator=self._fee_calc)
 
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)
