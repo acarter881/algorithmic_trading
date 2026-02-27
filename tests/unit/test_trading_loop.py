@@ -6,6 +6,9 @@ import asyncio
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from autotrader.config.models import (
     AppConfig,
     ArenaMonitorConfig,
@@ -16,16 +19,28 @@ from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.signals.base import Signal, SignalUrgency
+from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
+from autotrader.state.models import Signal as SignalRow
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _config() -> AppConfig:
+def _config(discord_enabled: bool = False) -> AppConfig:
     return AppConfig(
         arena_monitor=ArenaMonitorConfig(poll_interval_seconds=1),
         leaderboard_alpha=LeaderboardAlphaConfig(target_series=["KXTOPMODEL"]),
+        discord=DiscordConfig(
+            webhook_url="https://discord.com/api/webhooks/test/test" if discord_enabled else "",
+            enabled=discord_enabled,
+        ),
     )
+
+
+def _session_factory() -> sessionmaker:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)
 
 
 def _signal(event_type: str = "ranking_change") -> Signal:
@@ -61,6 +76,7 @@ class TestTradingLoopInit:
         assert loop.strategy is not None
         assert loop.risk_manager is not None
         assert loop.execution_engine is not None
+        assert loop.alerter is not None
         await loop.shutdown()
 
     async def test_default_paper_mode(self) -> None:
@@ -74,6 +90,19 @@ class TestTradingLoopInit:
         loop = TradingLoop(_config())
         assert not loop.running
         assert loop.tick_count == 0
+
+    async def test_initialize_with_session_factory(self) -> None:
+        loop = TradingLoop(_config())
+        sf = _session_factory()
+        await loop.initialize(session_factory=sf)
+        assert loop.repository is not None
+        await loop.shutdown()
+
+    async def test_initialize_without_session_factory(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+        assert loop.repository is None
+        await loop.shutdown()
 
 
 class TestTradingLoopTick:
@@ -199,7 +228,185 @@ class TestPortfolioSnapshot:
         await loop.shutdown()
 
 
-# ── DiscordAlerter ───────────────────────────────────────────────────────
+# ── Persistence integration ──────────────────────────────────────────────
+
+
+class TestTradingLoopPersistence:
+    async def test_tick_persists_signals(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        with sf() as session:
+            signals = session.query(SignalRow).all()
+            assert len(signals) == 1
+            assert signals[0].source == "arena_monitor"
+            assert signals[0].event_type == "ranking_change"
+
+        await loop.shutdown()
+
+    async def test_tick_persists_orders_and_fills(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        with sf() as session:
+            orders = session.query(Order).all()
+            assert len(orders) == 1
+            assert orders[0].ticker == "KXTOPMODEL-GPT5"
+            assert orders[0].status == "filled"  # paper mode = instant fill
+
+            fills = session.query(Fill).all()
+            assert len(fills) == 1
+            assert fills[0].ticker == "KXTOPMODEL-GPT5"
+
+        await loop.shutdown()
+
+    async def test_tick_persists_risk_rejections(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        bad_proposal = ProposedOrder(
+            strategy="leaderboard_alpha",
+            ticker="T1",
+            side="yes",
+            price_cents=0,  # fails price_sanity
+            quantity=5,
+        )
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[bad_proposal])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        with sf() as session:
+            events = session.query(RiskEvent).all()
+            assert len(events) >= 1
+            assert any("price_sanity" in e.check_name for e in events)
+
+        await loop.shutdown()
+
+    async def test_startup_shutdown_events_persisted(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+        await loop.shutdown()
+
+        with sf() as session:
+            events = session.query(SystemEvent).all()
+            types = [e.event_type for e in events]
+            assert "startup" in types
+            assert "shutdown" in types
+
+    async def test_tick_error_persists_system_event(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        with sf() as session:
+            events = session.query(SystemEvent).all()
+            error_events = [e for e in events if e.event_type == "tick_error"]
+            assert len(error_events) == 1
+            assert error_events[0].severity == "error"
+
+        await loop.shutdown()
+
+
+# ── Discord alerting integration ─────────────────────────────────────────
+
+
+class TestTradingLoopAlerting:
+    async def test_alerter_initialized_in_loop(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+        assert loop.alerter is not None
+        assert loop.alerter.enabled
+        await loop.shutdown()
+
+    async def test_trade_alert_sent_on_execution(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        # Mock the alerter's send_trade_alert
+        assert loop._alerter is not None
+        loop._alerter.send_trade_alert = AsyncMock()  # type: ignore[method-assign]
+        loop._alerter.send_error_alert = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop._alerter.send_trade_alert.assert_called_once()
+        call_kwargs = loop._alerter.send_trade_alert.call_args[1]
+        assert call_kwargs["ticker"] == "KXTOPMODEL-GPT5"
+        assert call_kwargs["side"] == "yes"
+        assert call_kwargs["is_paper"] is True
+
+        await loop.shutdown()
+
+    async def test_error_alert_sent_on_tick_error(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+        assert loop._alerter is not None
+        loop._alerter.send_error_alert = AsyncMock()  # type: ignore[method-assign]
+        loop._alerter.send_system_alert = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop._alerter.send_error_alert.assert_called_once()
+
+        await loop.shutdown()
+
+    async def test_system_alerts_on_startup_shutdown(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+
+        # After initialize(), replace alerter methods with mocks to capture calls
+        assert loop._alerter is not None
+        mock_alert = AsyncMock()
+        loop._alerter.send_system_alert = mock_alert  # type: ignore[method-assign]
+
+        # shutdown sends a system alert
+        await loop.shutdown()
+
+        mock_alert.assert_called_once()
+        call_args = mock_alert.call_args
+        assert "Stopped" in call_args[0][0]
+
+
+# ── DiscordAlerter (standalone tests) ───────────────────────────────────
 
 
 class TestDiscordAlerter:
