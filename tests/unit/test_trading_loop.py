@@ -18,9 +18,9 @@ from autotrader.config.models import (
     LeaderboardAlphaConfig,
 )
 from autotrader.core.loop import TradingLoop
-from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
+from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
 from autotrader.state.models import Signal as SignalRow
