@@ -3,7 +3,7 @@
 Supports multiple extraction strategies to handle the Arena site's
 data format, which may change over time:
 
-1. CSV from fboulnois/llm-leaderboard-csv (most reliable machine-readable source)
+1. CSV — if the response is CSV-formatted data
 2. JSON API response — structured JSON from an API endpoint
 3. ``__NEXT_DATA__`` — JSON blob embedded by Next.js in the page HTML
 4. HTML table fallback — scrape the rendered ``<table>`` element
@@ -11,8 +11,7 @@ data format, which may change over time:
 The parser normalises all formats into a list of ``LeaderboardEntry`` objects.
 
 Note: The lmarena.ai site renders via JavaScript (Next.js), so the HTML
-table strategy only works if the page is server-side rendered.  The CSV
-strategy is preferred for reliability.
+table strategy only works if the page is server-side rendered.
 """
 
 from __future__ import annotations
@@ -224,7 +223,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
 def parse_csv(content: str) -> list[LeaderboardEntry]:
     """Parse leaderboard entries from CSV content.
 
-    Supports the format from ``fboulnois/llm-leaderboard-csv``::
+    Supports CSV with columns like::
 
         rank,rank_stylectrl,model,arena_score,95_pct_ci,votes,organization,...
 
@@ -317,7 +316,7 @@ def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
 
     Tries strategies in order: CSV, JSON, ``__NEXT_DATA__``, HTML table.
     """
-    # Strategy 1: CSV (most reliable for fboulnois/llm-leaderboard-csv)
+    # Strategy 1: CSV
     if _looks_like_csv(html_or_json):
         entries = parse_csv(html_or_json)
         if entries:

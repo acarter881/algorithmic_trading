@@ -10,15 +10,18 @@ This system monitors the [LMSYS Chatbot Arena](https://arena.ai) leaderboard and
 
 ## Data Source
 
-The autotrader monitors the **LMSYS Chatbot Arena** leaderboard using the **Text, Overall, No Style Control** ranking category. The `rank_stylectrl` column corresponds to `Rank (UB)` — the resolution metric for the KXTOPMODEL contract on Kalshi.
+The autotrader monitors the **LMSYS Chatbot Arena** live leaderboard, specifically the **Text, Overall, No Style Control** category:
 
-| Source | URL | Type |
-|--------|-----|------|
-| Primary | `https://raw.githubusercontent.com/fboulnois/llm-leaderboard-csv/main/csv/lmarena_text.csv` | CSV (updated regularly) |
-| Fallback 1 | `https://arena.ai/leaderboard/text/overall-no-style-control` | HTML |
-| Fallback 2 | `https://lmarena.ai/leaderboard/text/overall-no-style-control` | HTML |
+> **https://arena.ai/leaderboard/text/overall-no-style-control**
 
-The primary source is the [fboulnois/llm-leaderboard-csv](https://github.com/fboulnois/llm-leaderboard-csv) repository, which provides clean CSV data. The HTML fallbacks are used if the CSV source is unavailable.
+`Rank (UB)` from this page is the resolution metric for the KXTOPMODEL contract on Kalshi.
+
+| Source | URL |
+|--------|-----|
+| Primary | `https://arena.ai/leaderboard/text/overall-no-style-control` |
+| Fallback | `https://lmarena.ai/leaderboard/text/overall-no-style-control` |
+
+Both URLs point to the same live leaderboard data. The fallback is used automatically if the primary is unreachable.
 
 Polling interval is **30 seconds** by default (configurable in `config/signal_sources/arena_monitor.yaml`).
 
@@ -74,6 +77,21 @@ The Docker container runs in the background — you do not need to keep Docker D
 | `parsed_html_table` | Parsed leaderboard into structured data |
 | `tick_no_signals` | Evaluated data, no actionable trade this tick |
 | `signal_generated` | A trading signal was detected |
+
+## Reviewing Trades
+
+All orders, fills, positions, and daily P&L are recorded to a local SQLite database (`autotrader.db`). This is created automatically on first run — no database setup is needed in `.env`.
+
+Your primary view of trade activity is the **Kalshi platform itself**:
+
+- **Demo**: Log in at [demo.kalshi.com](https://demo.kalshi.com) to see paper-trade positions, fills, and P&L.
+- **Production**: Log in at [kalshi.com](https://kalshi.com) to see live positions, fills, and P&L.
+
+The two relevant event pages on Kalshi:
+- **KXTOPMODEL** — per-model contracts on which AI model will be ranked #1
+- **KXLLM1** — per-organization contracts on which AI org will lead
+
+If Discord alerts are configured, you will also receive real-time notifications for trades, signals, and errors.
 
 ## Quick Start (Local)
 
