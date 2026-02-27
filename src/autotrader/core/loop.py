@@ -243,12 +243,12 @@ class TradingLoop:
                     reasons=decision.rejection_reasons,
                 )
                 # Persist each risk rejection
-                for result in decision.results:
-                    if result.verdict.value == "rejected":
+                for check_result in decision.results:
+                    if check_result.verdict.value == "rejected":
                         self._persist_risk_event(
-                            result.check_name,
+                            check_result.check_name,
                             self._risk.serialize_order(proposal),
-                            result.reason,
+                            check_result.reason,
                         )
 
         if not approved:
