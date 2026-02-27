@@ -23,7 +23,11 @@ def cli() -> None:
 )
 def run(config_dir: str, environment: str | None) -> None:
     """Start the autotrader."""
+    import asyncio
+    import signal as signal_mod
+
     from autotrader.config.loader import load_config
+    from autotrader.core.loop import TradingLoop
     from autotrader.monitoring.logging import setup_logging
     from autotrader.state.database import create_db_engine, init_db
 
@@ -44,14 +48,31 @@ def run(config_dir: str, environment: str | None) -> None:
     )
 
     # Initialize database
-    engine = create_db_engine(url=config.database.url, echo=config.database.echo)
-    init_db(engine)
+    db_engine = create_db_engine(url=config.database.url, echo=config.database.echo)
+    init_db(db_engine)
     log.info("database_initialized", url=config.database.url)
 
     click.echo(f"Kalshi Autotrader v{__version__}")
     click.echo(f"Environment: {config.kalshi.environment.value}")
     click.echo(f"Database: {config.database.url}")
-    click.echo("Autotrader is ready. (Full run loop will be implemented in later phases.)")
+
+    async def _run() -> None:
+        trading_loop = TradingLoop(config)
+        await trading_loop.initialize()
+
+        # Graceful shutdown on SIGINT / SIGTERM
+        loop = asyncio.get_running_loop()
+        for sig in (signal_mod.SIGINT, signal_mod.SIGTERM):
+            loop.add_signal_handler(sig, trading_loop.stop)
+
+        click.echo("Autotrader running. Press Ctrl+C to stop.")
+        try:
+            await trading_loop.run()
+        finally:
+            await trading_loop.shutdown()
+            click.echo("Autotrader stopped.")
+
+    asyncio.run(_run())
 
 
 @cli.command()
