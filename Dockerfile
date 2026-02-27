@@ -11,16 +11,13 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first (cached layer)
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
-
-# Copy application source
+# Copy project metadata and source
+COPY pyproject.toml README.md ./
 COPY src/ src/
 COPY config/ config/
 
-# Re-install in editable mode so the entry point resolves
-RUN pip install --no-cache-dir -e .
+# Install the package
+RUN pip install --no-cache-dir .
 
 # Create directories for runtime data
 RUN mkdir -p /data /logs
