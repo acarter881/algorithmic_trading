@@ -1,0 +1,26 @@
+# Git
+.git
+.github
+
+# Python
+__pycache__
+*.pyc
+*.egg-info
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# Development
+tests/
+scripts/
+*.md
+
+# Runtime data (mounted as volumes instead)
+*.db
+*.sqlite3
+logs/
+
+# Secrets (injected via .env or environment variables)
+.env
+*.pem
+config/live.yaml
