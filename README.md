@@ -69,6 +69,36 @@ docker compose up -d --build
 
 The Docker container runs in the background — you do not need to keep Docker Desktop open. Discord webhook notifications will alert you to trades and errors in real time.
 
+### Switching from demo to production (exact procedure)
+
+> **Safety first:** production mode places real-money orders. Keep demo mode enabled until you have reviewed strategy behavior and risk limits.
+
+1. **Confirm required production credentials are present in `.env`:**
+   - `AUTOTRADER__KALSHI__API_KEY_ID` (a valid production API key ID)
+   - `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` (or Docker-mounted `/keys/kalshi_private_key.pem`)
+   - `AUTOTRADER__KALSHI__ENVIRONMENT=production`
+2. **Verify private key mount and path alignment:**
+   - In Docker Compose, the key is mounted as `./kalshi_private_key.pem:/keys/kalshi_private_key.pem:ro`.
+   - Ensure `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem`.
+3. **Run a preflight sanity check before starting trading:**
+   ```bash
+   docker compose config
+   docker compose run --rm autotrader validate-config --config-dir config
+   ```
+4. **Start/restart the service in production mode:**
+   ```bash
+   docker compose up -d --build
+   ```
+5. **Confirm production mode in startup logs (must match exactly):**
+   ```bash
+   docker compose logs --tail 100 autotrader
+   ```
+   Required confirmation log fields:
+   - `runtime_mode_resolved` with `mode=production` and `api_base_url=https://api.elections.kalshi.com/trade-api/v2`
+   - `kalshi_client_connected` with `environment=production` and `base_url=https://api.elections.kalshi.com/trade-api/v2`
+
+If either log line still reports `demo` or the demo API host, stop immediately with `docker compose down` and fix `.env` before resuming.
+
 ### What the logs mean
 
 | Log message | Meaning |
