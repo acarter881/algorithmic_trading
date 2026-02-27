@@ -291,9 +291,11 @@ class RiskManager:
         balance = self._portfolio.balance_cents
 
         if balance <= 0:
-            # Cannot compute exposure without a balance; allow order through
-            # (the execution engine should handle zero-balance separately)
-            return RiskCheckResult(check_name="portfolio_exposure", verdict=RiskVerdict.APPROVED)
+            return RiskCheckResult(
+                check_name="portfolio_exposure",
+                verdict=RiskVerdict.REJECTED,
+                reason=(f"Cannot evaluate portfolio exposure: invalid balance={balance}c"),
+            )
 
         current_exposure = self._total_exposure_cents()
         order_cost = order.price_cents * order.quantity

@@ -237,6 +237,10 @@ class TradingLoop:
             tickers=[p.ticker for p in all_proposals],
         )
 
+        # Refresh portfolio state before evaluating this tick's proposals.
+        snapshot = self.build_portfolio_snapshot()
+        self._risk.update_portfolio(snapshot)
+
         # 3. Risk-check each proposal
         approved: list[ProposedOrder] = []
         for proposal in all_proposals:
@@ -321,12 +325,13 @@ class TradingLoop:
 
     # ── Portfolio snapshot (for risk manager refresh) ─────────────────
 
-    def build_portfolio_snapshot(self, balance_cents: int = 0) -> PortfolioSnapshot:
+    def build_portfolio_snapshot(self) -> PortfolioSnapshot:
         """Build a portfolio snapshot from the strategy's current state.
 
-        In a full production system this would query the database and API.
-        For now it uses the strategy's internal contract views.
+        Uses exchange/account balance when available, strategy-tracked positions,
+        and persisted daily P&L from the repository (if configured).
         """
+        balance_cents = self._current_balance_cents()
         positions: list[PositionInfo] = []
         if self._strategy:
             for ticker, contract in self._strategy.contracts.items():
@@ -339,7 +344,40 @@ class TradingLoop:
                             avg_cost_cents=float(contract.last_price or contract.yes_ask),
                         )
                     )
-        return PortfolioSnapshot(balance_cents=balance_cents, positions=positions)
+
+        daily_realized: dict[str, int] = {}
+        daily_unrealized: dict[str, int] = {}
+        if self._repo and self._strategy:
+            pnl = self._repo.get_daily_pnl(self._strategy.name)
+            if pnl is not None:
+                daily_realized[self._strategy.name] = pnl.realized_pnl_cents
+                daily_unrealized[self._strategy.name] = pnl.unrealized_pnl_cents
+
+        return PortfolioSnapshot(
+            balance_cents=balance_cents,
+            positions=positions,
+            daily_realized_pnl_cents=daily_realized,
+            daily_unrealized_pnl_cents=daily_unrealized,
+        )
+
+    def _current_balance_cents(self) -> int:
+        """Best-effort account balance lookup.
+
+        Live mode uses the exchange API. Paper mode falls back to a configurable
+        notional account balance.
+        """
+        if self._engine and self._engine.mode == ExecutionMode.LIVE and self._engine._api is not None:
+            try:
+                return self._engine._api.get_balance().balance
+            except Exception:
+                logger.warning("balance_fetch_failed", tick=self._tick_count)
+                return 0
+
+        try:
+            return int(os.environ.get("AUTOTRADER_PAPER_BALANCE_CENTS", "100000"))
+        except ValueError:
+            logger.warning("invalid_paper_balance_env", value=os.environ.get("AUTOTRADER_PAPER_BALANCE_CENTS"))
+            return 100_000
 
     # ── Persistence helpers ───────────────────────────────────────────
 
