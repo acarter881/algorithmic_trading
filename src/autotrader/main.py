@@ -29,7 +29,7 @@ def run(config_dir: str, environment: str | None) -> None:
     from autotrader.config.loader import load_config
     from autotrader.core.loop import TradingLoop
     from autotrader.monitoring.logging import setup_logging
-    from autotrader.state.database import create_db_engine, init_db
+    from autotrader.state.database import create_db_engine, get_session_factory, init_db
 
     config = load_config(config_dir=config_dir, environment=environment)
     setup_logging(
@@ -50,6 +50,7 @@ def run(config_dir: str, environment: str | None) -> None:
     # Initialize database
     db_engine = create_db_engine(url=config.database.url, echo=config.database.echo)
     init_db(db_engine)
+    session_factory = get_session_factory(db_engine)
     log.info("database_initialized", url=config.database.url)
 
     click.echo(f"Kalshi Autotrader v{__version__}")
@@ -58,7 +59,7 @@ def run(config_dir: str, environment: str | None) -> None:
 
     async def _run() -> None:
         trading_loop = TradingLoop(config)
-        await trading_loop.initialize()
+        await trading_loop.initialize(session_factory=session_factory)
 
         # Graceful shutdown on SIGINT / SIGTERM
         loop = asyncio.get_running_loop()
