@@ -1,0 +1,22 @@
+services:
+  autotrader:
+    build: .
+    container_name: kalshi-autotrader
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persistent database and logs survive container restarts
+      - autotrader-data:/data
+      - autotrader-logs:/logs
+      # Mount your Kalshi private key (read-only)
+      - ./kalshi_private_key.pem:/keys/kalshi_private_key.pem:ro
+    environment:
+      - AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem
+      - AUTOTRADER__KALSHI__ENVIRONMENT=demo
+    # Graceful shutdown (SIGTERM → stop() → shutdown())
+    stop_grace_period: 10s
+
+volumes:
+  autotrader-data:
+  autotrader-logs:
