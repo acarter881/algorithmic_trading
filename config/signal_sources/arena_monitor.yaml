@@ -1,13 +1,12 @@
 # Arena leaderboard monitor signal source configuration.
 #
-# Primary source: fboulnois/llm-leaderboard-csv (clean CSV, updated regularly).
-# The rank_stylectrl column = Rank(UB) — the KXTOPMODEL resolution metric.
-# Fallbacks: arena.ai and lmarena.ai HTML pages (JS-rendered, less reliable).
+# Primary source: LMSYS Chatbot Arena live leaderboard (Text, Overall, No Style Control).
+# Rank (UB) from this page is the KXTOPMODEL resolution metric on Kalshi.
+# Fallback: lmarena.ai mirror of the same leaderboard.
 
 arena_monitor:
-  primary_url: "https://raw.githubusercontent.com/fboulnois/llm-leaderboard-csv/main/csv/lmarena_text.csv"
+  primary_url: "https://arena.ai/leaderboard/text/overall-no-style-control"
   fallback_urls:
-    - "https://arena.ai/leaderboard/text/overall-no-style-control"
     - "https://lmarena.ai/leaderboard/text/overall-no-style-control"
   poll_interval_seconds: 30
   request_timeout_seconds: 15.0
