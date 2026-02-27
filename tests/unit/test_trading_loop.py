@@ -18,6 +18,7 @@ from autotrader.config.models import (
     LeaderboardAlphaConfig,
 )
 from autotrader.core.loop import TradingLoop
+from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.signals.base import Signal, SignalUrgency
@@ -197,6 +198,70 @@ class TestTradingLoopTick:
         assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
 
+
+    async def test_tick_refreshes_portfolio_before_risk_evaluation(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        snapshot = PortfolioSnapshot(balance_cents=123_456)
+        loop.build_portfolio_snapshot = MagicMock(return_value=snapshot)  # type: ignore[method-assign]
+
+        assert loop._risk is not None
+        loop._risk.update_portfolio = MagicMock(wraps=loop._risk.update_portfolio)  # type: ignore[method-assign]
+        original_evaluate = loop._risk.evaluate
+
+        def _evaluate_with_assert(order: ProposedOrder):
+            loop._risk.update_portfolio.assert_called_once_with(snapshot)
+            assert loop._risk.portfolio is snapshot
+            return original_evaluate(order)
+
+        loop._risk.evaluate = MagicMock(side_effect=_evaluate_with_assert)  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop.build_portfolio_snapshot.assert_called_once()
+        loop._risk.update_portfolio.assert_called_once_with(snapshot)
+        assert loop._risk.evaluate.call_count == 1
+        await loop.shutdown()
+
+    async def test_tick_uses_refreshed_snapshot_for_exposure_limits(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        assert loop._risk is not None
+        loop._risk.update_portfolio(PortfolioSnapshot(balance_cents=100_000))
+
+        refreshed_snapshot = PortfolioSnapshot(
+            balance_cents=10_000,
+            positions=[
+                PositionInfo(
+                    ticker="KXTOPMODEL-GPT5",
+                    event_ticker="KXTOPMODEL",
+                    quantity=180,
+                    avg_cost_cents=50,
+                )
+            ],
+        )
+        loop.build_portfolio_snapshot = MagicMock(return_value=refreshed_snapshot)  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
+        await loop.shutdown()
+
     async def test_tick_exception_does_not_crash(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
@@ -240,8 +305,8 @@ class TestPortfolioSnapshot:
     async def test_build_snapshot_empty(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
-        snap = loop.build_portfolio_snapshot(balance_cents=50000)
-        assert snap.balance_cents == 50000
+        snap = loop.build_portfolio_snapshot()
+        assert snap.balance_cents > 0
         assert len(snap.positions) == 0
         await loop.shutdown()
 

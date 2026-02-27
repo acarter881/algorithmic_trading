@@ -322,10 +322,17 @@ class TestPortfolioExposure:
         decision = rm.evaluate(_order(price_cents=50, quantity=300))
         assert not decision.approved
 
-    def test_zero_balance_approved(self) -> None:
+    def test_zero_balance_rejected(self) -> None:
         rm = _manager(portfolio=_portfolio(balance_cents=0))
         decision = rm.evaluate(_order())
-        assert decision.approved
+        assert not decision.approved
+        assert any("invalid balance" in reason.lower() for reason in decision.rejection_reasons)
+
+    def test_negative_balance_rejected(self) -> None:
+        rm = _manager(portfolio=_portfolio(balance_cents=-100))
+        decision = rm.evaluate(_order())
+        assert not decision.approved
+        assert any("invalid balance" in reason.lower() for reason in decision.rejection_reasons)
 
     def test_no_existing_positions(self) -> None:
         rm = _manager(portfolio=_portfolio(balance_cents=100_000))
