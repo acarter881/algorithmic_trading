@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from autotrader.api.client import KalshiAPIClient
+from autotrader.api.client import KalshiAPIClient, MarketInfo
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
@@ -81,7 +81,9 @@ class TradingLoop:
             config=self._config.leaderboard_alpha,
             fee_calculator=self._fee_calc,
         )
-        await self._strategy.initialize(market_data or {}, None)
+        if market_data is None:
+            market_data = self._bootstrap_market_data()
+        await self._strategy.initialize(market_data, None)
 
         # Risk manager
         self._risk = RiskManager(config=self._config.risk)
@@ -119,6 +121,54 @@ class TradingLoop:
         # Record startup event
         self._persist_system_event("startup", {"mode": mode.value}, "info")
         await self._send_system_alert("Autotrader Started", f"Mode: {mode.value}")
+
+    def _bootstrap_market_data(self) -> dict[str, Any]:
+        """Discover active markets for configured target series at startup."""
+        client = KalshiAPIClient(self._config.kalshi)
+        markets: list[MarketInfo] = []
+
+        try:
+            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+            client.connect(private_key_pem=private_key_pem)
+
+            for series_ticker in self._config.leaderboard_alpha.target_series:
+                cursor: str | None = None
+                while True:
+                    series_markets, cursor = client.get_markets(
+                        series_ticker=series_ticker,
+                        status="open",
+                        limit=200,
+                        cursor=cursor,
+                    )
+                    markets.extend(series_markets)
+                    if not cursor or not series_markets:
+                        break
+
+            logger.info(
+                "market_data_bootstrapped",
+                series=self._config.leaderboard_alpha.target_series,
+                markets=len(markets),
+            )
+        except Exception:
+            logger.exception(
+                "market_data_bootstrap_failed",
+                series=self._config.leaderboard_alpha.target_series,
+            )
+            return {"markets": []}
+
+        return {
+            "markets": [
+                {
+                    "ticker": market.ticker,
+                    "title": market.title,
+                    "subtitle": market.subtitle,
+                    "yes_bid": market.yes_bid,
+                    "yes_ask": market.yes_ask,
+                    "last_price": market.last_price,
+                }
+                for market in markets
+            ]
+        }
 
     async def run(self) -> None:
         """Start the poll loop.  Blocks until :meth:`stop` is called."""

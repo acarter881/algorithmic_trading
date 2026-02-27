@@ -99,7 +99,8 @@ class TestTradingLoopInit:
         loop = TradingLoop(config)
         await loop.initialize()
 
-        mock_client.connect.assert_called_once_with(private_key_pem=ANY)
+        assert mock_client.connect.call_count >= 1
+        mock_client.connect.assert_any_call(private_key_pem=ANY)
         assert loop.execution_engine is not None
         assert loop.execution_engine.mode == ExecutionMode.LIVE
         assert loop.execution_engine._api is mock_client
@@ -121,6 +122,43 @@ class TestTradingLoopInit:
         loop = TradingLoop(_config())
         await loop.initialize()
         assert loop.repository is None
+        await loop.shutdown()
+
+    async def test_initialize_bootstraps_market_data_for_strategy(self, monkeypatch) -> None:
+        market_a = MagicMock(
+            ticker="KXTOPMODEL-GPT5",
+            title="Top model",
+            subtitle="GPT-5",
+            yes_bid=44,
+            yes_ask=46,
+            last_price=45,
+        )
+        market_b = MagicMock(
+            ticker="KXLLM1-CLAUDE",
+            title="LLM #1",
+            subtitle="Claude",
+            yes_bid=39,
+            yes_ask=41,
+            last_price=40,
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_markets.side_effect = [
+            ([market_a], None),
+            ([market_b], None),
+        ]
+        monkeypatch.setattr("autotrader.core.loop.KalshiAPIClient", MagicMock(return_value=mock_client))
+
+        config = _config()
+        config.leaderboard_alpha.target_series = ["KXTOPMODEL", "KXLLM1"]
+
+        loop = TradingLoop(config)
+        await loop.initialize()
+
+        assert loop.strategy is not None
+        assert loop.strategy._resolve_ticker("GPT-5") == "KXTOPMODEL-GPT5"
+        assert loop.strategy._resolve_ticker("Claude") == "KXLLM1-CLAUDE"
+
         await loop.shutdown()
 
 
