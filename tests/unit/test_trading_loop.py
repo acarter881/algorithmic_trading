@@ -350,7 +350,15 @@ class TestTradingLoopTick:
                 }
             ]
         }
-        loop = TradingLoop(_config())
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
 
         assert loop._monitor is not None
@@ -411,7 +419,15 @@ class TestTradingLoopTick:
                 }
             ]
         }
-        loop = TradingLoop(_config())
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
 
         assert loop._monitor is not None
@@ -640,7 +656,15 @@ class TestPortfolioSnapshot:
             ]
         }
 
-        loop = TradingLoop(_config())
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
         assert loop._strategy is not None
         loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 130
@@ -699,7 +723,15 @@ class TestPortfolioSnapshot:
             ]
         }
 
-        loop = TradingLoop(_config())
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
         assert loop._strategy is not None
         loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 140
