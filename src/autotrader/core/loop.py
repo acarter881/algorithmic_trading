@@ -25,7 +25,7 @@ from autotrader.api.client import KalshiAPIClient, MarketInfo
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
-from autotrader.signals.arena_monitor import ArenaMonitor
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.state.repository import TradingRepository
 from autotrader.strategies.leaderboard_alpha import LeaderboardAlphaStrategy
 from autotrader.utils.fees import FeeCalculator
@@ -313,7 +313,12 @@ class TradingLoop:
         await self._refresh_market_data()
 
         # 1. Poll for signals
-        signals = await self._monitor.poll()
+        try:
+            signals = await self._monitor.poll()
+        except ArenaMonitorFailureThresholdError as failure:
+            await self._handle_arena_monitor_failure_threshold(failure)
+            return
+
         if not signals:
             logger.debug("tick_no_signals", tick=self._tick_count)
             return
@@ -409,6 +414,41 @@ class TradingLoop:
                     "order_execution_failed",
                     f"Ticker: {result.order.ticker}, Error: {result.error}",
                 )
+
+    async def _handle_arena_monitor_failure_threshold(
+        self,
+        failure: ArenaMonitorFailureThresholdError,
+    ) -> None:
+        """Protective response when Arena monitor repeatedly fails."""
+        details = {
+            "consecutive_failures": failure.consecutive_failures,
+            "max_consecutive_failures": failure.max_consecutive_failures,
+            "urls_attempted": failure.urls_attempted,
+            "tick": self._tick_count,
+        }
+
+        logger.critical("arena_failure_threshold_triggered", **details)
+
+        if self._risk:
+            self._risk.activate_kill_switch(
+                reason=(
+                    "Arena monitor failure threshold exceeded: "
+                    f"{failure.consecutive_failures}/{failure.max_consecutive_failures}; "
+                    f"urls={failure.urls_attempted}"
+                )
+            )
+
+        self.stop()
+        self._persist_system_event("arena_failure_threshold_exceeded", details, severity="critical")
+
+        message = (
+            "Arena monitor failed consecutively and triggered protective shutdown. "
+            f"consecutive_failures={failure.consecutive_failures}, "
+            f"max_consecutive_failures={failure.max_consecutive_failures}, "
+            f"urls_attempted={failure.urls_attempted}"
+        )
+        await self._send_error_alert("arena_failure_threshold_exceeded", message)
+        await self._send_system_alert("CRITICAL: Arena monitor failure threshold exceeded", message)
 
     async def _refresh_market_data(self) -> None:
         """Refresh quotes for all strategy-tracked tickers and route into strategy."""
