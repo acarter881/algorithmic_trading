@@ -14,7 +14,7 @@ The autotrader monitors the **LMSYS Chatbot Arena** live leaderboard, specifical
 
 > **https://arena.ai/leaderboard/text/overall-no-style-control**
 
-`Rank (UB)` from this page is the resolution metric for the KXTOPMODEL contract on Kalshi.
+`Rank (UB)` from this page is the primary resolution input for KXTOPMODEL, with deterministic tie-break rules mirrored in `resolve_top_model`.
 
 | Source | URL |
 |--------|-----|
@@ -24,6 +24,24 @@ The autotrader monitors the **LMSYS Chatbot Arena** live leaderboard, specifical
 Both URLs point to the same live leaderboard data. The fallback is used automatically if the primary is unreachable.
 
 Polling interval is **30 seconds** by default (configurable in `config/signal_sources/arena_monitor.yaml`).
+
+### Resolution Rules
+
+Winner selection is implemented in `src/autotrader/signals/settlement.py::resolve_top_model` and follows this exact sort cascade:
+
+1. `rank_ub` ascending (lower is better)
+2. `score` descending (higher is better)
+3. `votes` descending (higher is better)
+4. `release_date` ascending (earlier date wins)
+5. `model_name` ascending (lexicographic final tie-break)
+
+Notes:
+- Invalid/non-positive `rank_ub` values are treated as very large (sorted to the bottom).
+- Missing `release_date` values are treated as very late dates (sorted to the bottom within ties).
+
+This exact winner logic directly affects:
+- `new_leader` generation in `src/autotrader/signals/arena_monitor.py` (leader-change detection uses `resolve_top_model` on previous vs current snapshots).
+- Fair-value biasing in `src/autotrader/strategies/leaderboard_alpha.py::estimate_fair_value` (a model currently winning this cascade gets a small probability uplift when tie-break inputs are complete).
 
 ## Quick Start (Docker)
 
@@ -169,8 +187,29 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 
 | Series | Description | Resolution Metric |
 |--------|-------------|-------------------|
-| KXTOPMODEL | Top AI model by Rank (UB) | Per-model contracts |
-| KXLLM1 | Best AI org by Rank (UB) | Per-organization contracts |
+| KXTOPMODEL | Top AI model using the full `resolve_top_model` tie-break cascade | Per-model contracts |
+| KXLLM1 | Top AI organization derived from the resolved top model winner | Per-organization contracts |
+
+## Paper-Trading Hardening Checklist
+
+Use this checklist before promoting from demo/paper trading to production:
+
+- **Data quality**
+  - Arena fetch success rate is stable across primary/fallback URLs.
+  - Parsed leaderboard fields (`rank_ub`, `score`, `votes`, `release_date`) are consistently populated and sane.
+  - Snapshot cadence and staleness monitoring are in place (no silent multi-poll data gaps).
+- **Signal quality**
+  - `new_leader`, `ranking_change`, and `score_shift` signals are manually spot-checked against raw leaderboard moves.
+  - `new_leader` events match settlement tie-break outcomes from `resolve_top_model`.
+  - False-positive/duplicate signal rates are reviewed from logs over multi-day runs.
+- **Risk limits**
+  - Position sizing, max exposure, and per-market caps are validated under paper fills.
+  - Fee-aware edge checks remain positive after realistic spread/slippage assumptions.
+  - Kill-switch / safe-disable procedures are tested and documented.
+- **Drift checks**
+  - Fair-value vs market-price residuals are tracked to detect model edge decay.
+  - Pairwise and rank-based probability assumptions are reviewed on a recurring schedule.
+  - Strategy behavior is revalidated after parser, signal, or tie-break logic changes.
 
 ## Development
 
