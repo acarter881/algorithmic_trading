@@ -133,7 +133,7 @@ class TestTradingLoopInit:
                 "ticker": "KXTOPMODEL-GPT5",
                 "side": "yes",
                 "action": "buy",
-                "count": 95,
+                "count": 100,
                 "price_cents": 40,
                 "fee_cents": 0,
                 "is_taker": True,
@@ -162,12 +162,12 @@ class TestTradingLoopInit:
         await loop.initialize(market_data=market_data, session_factory=sf)
 
         assert loop.strategy is not None
-        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 95
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 100
 
         snapshot = loop.build_portfolio_snapshot()
         assert len(snapshot.positions) == 1
         assert snapshot.positions[0].ticker == "KXTOPMODEL-GPT5"
-        assert snapshot.positions[0].quantity == 95
+        assert snapshot.positions[0].quantity == 100
 
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
