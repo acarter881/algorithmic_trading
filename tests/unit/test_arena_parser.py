@@ -52,6 +52,16 @@ def csv_leaderboard() -> str:
     return (FIXTURES / "arena_leaderboard.csv").read_text()
 
 
+@pytest.fixture
+def csv_leaderboard_with_release_dates() -> str:
+    return (FIXTURES / "arena_leaderboard_with_release_dates.csv").read_text()
+
+
+@pytest.fixture
+def html_leaderboard_with_release_dates() -> str:
+    return (FIXTURES / "arena_leaderboard_with_release_dates.html").read_text()
+
+
 # ── CSV Parsing ───────────────────────────────────────────────────────
 
 
@@ -102,6 +112,14 @@ class TestParseCsv:
         assert entries[0].score == 1300.0
         assert entries[0].votes == 5000
         assert entries[0].organization == "TestOrg"
+
+    def test_release_date_alias_and_normalization(self, csv_leaderboard_with_release_dates: str) -> None:
+        entries = parse_csv(csv_leaderboard_with_release_dates)
+        assert len(entries) == 3
+        assert entries[0].release_date == "2025-01-15"
+        assert entries[1].release_date == "2024-07-03"
+        # Ambiguous numeric month/day is preserved raw.
+        assert entries[2].release_date == "03/04/2025"
 
 
 class TestLooksLikeCsv:
@@ -255,6 +273,12 @@ class TestParseHtmlTable:
         # Claude Opus: +3/-4
         assert entries[0].ci_upper == 3.0
         assert entries[0].ci_lower == -4.0
+
+    def test_release_date_column_alias_parsing(self, html_leaderboard_with_release_dates: str) -> None:
+        entries = parse_html_table(html_leaderboard_with_release_dates)
+        assert len(entries) == 2
+        assert entries[0].release_date == "2025-01-15"
+        assert entries[1].release_date == "2024-03"
 
 
 # ── Unified parse_leaderboard ─────────────────────────────────────────
