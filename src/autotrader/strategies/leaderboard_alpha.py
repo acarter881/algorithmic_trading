@@ -260,10 +260,9 @@ class LeaderboardAlphaStrategy(Strategy):
         if entry is None:
             return None
         prob = rank_to_probability(entry.rank_ub)
-        if self._has_complete_tiebreak_inputs():
-            winner = resolve_top_org(list(self._rankings.values()))
-            if winner and winner == organization:
-                prob = min(0.95, prob + 0.05)
+        winner = resolve_top_org(list(self._rankings.values()))
+        if winner and winner == organization:
+            prob = min(0.95, prob + 0.05)
         if entry.is_preliminary:
             prob *= 1.0 - self._config.preliminary_model_discount
         return max(1, min(99, round(prob * 100)))
@@ -404,8 +403,10 @@ class LeaderboardAlphaStrategy(Strategy):
         if isinstance(new_org, str) and new_org:
             org_ticker = self._resolve_ticker(new_org, series="KXLLM1")
             org_contract = self._contracts.get(org_ticker) if org_ticker else None
-            org_fv = self.estimate_org_fair_value(new_org)
-            if org_ticker and org_contract and org_fv is not None:
+            rank1_org_fv = max(1, min(99, round(rank_to_probability(1) * 100)))
+            estimated_org_fv = self.estimate_org_fair_value(new_org)
+            org_fv = max(rank1_org_fv, estimated_org_fv or 0)
+            if org_ticker and org_contract and org_fv > 0:
                 market_price = org_contract.yes_ask or org_contract.last_price
                 if 0 < market_price < 100:
                     orders.extend(
@@ -592,17 +593,30 @@ class LeaderboardAlphaStrategy(Strategy):
         )
         self._rebuild_org_rankings()
 
-    def _resolve_ticker(self, model_name: str, series: str = "KXTOPMODEL") -> str | None:
-        """Resolve an Arena model name to a Kalshi ticker via fuzzy matching."""
+    def _resolve_ticker(self, model_name: str, series: str | None = None) -> str | None:
+        """Resolve an Arena name to a Kalshi ticker via fuzzy matching."""
         if not model_name:
             return None
-        ticker_map = self._org_ticker_map if series == "KXLLM1" else self._model_ticker_map
-        if model_name in ticker_map:
-            return ticker_map[model_name]
+
+        if series == "KXLLM1":
+            if model_name in self._org_ticker_map:
+                return self._org_ticker_map[model_name]
+        elif series == "KXTOPMODEL":
+            if model_name in self._model_ticker_map:
+                return self._model_ticker_map[model_name]
+        else:
+            if model_name in self._model_ticker_map:
+                return self._model_ticker_map[model_name]
+            if model_name in self._org_ticker_map:
+                return self._org_ticker_map[model_name]
+
         if not self._ticker_model_names:
             return None
 
-        scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
+        if series is None:
+            scoped = dict(self._ticker_model_names)
+        else:
+            scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
         if not scoped:
             return None
 
@@ -618,7 +632,8 @@ class LeaderboardAlphaStrategy(Strategy):
 
         for ticker, name in scoped.items():
             if name == match.matched:
-                ticker_map[model_name] = ticker
+                cache = self._org_ticker_map if self._ticker_series(ticker) == "KXLLM1" else self._model_ticker_map
+                cache[model_name] = ticker
                 logger.info(
                     "model_ticker_mapped",
                     model=model_name,
