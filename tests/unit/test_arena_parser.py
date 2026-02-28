@@ -367,6 +367,28 @@ class TestSafeFloat:
 
 
 class TestPairwiseExtraction:
+    def test_extract_pairwise_from_next_payload_html(self) -> None:
+        html = """
+        <html><body><script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "charts": {
+                "pairwise": {
+                  "labels": ["A", "B"],
+                  "battle_matrix": [[0, 200], [200, 0]],
+                  "win_matrix": [[0.5, 0.6], [0.4, 0.5]]
+                }
+              }
+            }
+          }
+        }
+        </script></body></html>
+        """
+        agg = extract_pairwise_aggregates(html)
+        assert agg["A"].total_pairwise_battles == 200
+        assert agg["A"].average_pairwise_win_rate == pytest.approx(0.6)
+
     def test_extract_pairwise_aggregates(self) -> None:
         payload = {
             "charts": {

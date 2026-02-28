@@ -1192,3 +1192,16 @@ class TestPairwiseShift:
         orders = await s.on_signal(signal)
         assert len(orders) == 1
         assert orders[0].side == "yes"
+
+
+class TestSettlementBonusGuard:
+    def test_no_winner_bonus_with_incomplete_tiebreak_inputs(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "A": _entry(rank_ub=1, score=1500, votes=0),
+                "B": _entry(rank_ub=1, score=1500, votes=0),
+            }
+        )
+        fv = s.estimate_fair_value("A")
+        assert fv == 65

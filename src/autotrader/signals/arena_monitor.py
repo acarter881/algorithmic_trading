@@ -279,7 +279,9 @@ class ArenaMonitor(SignalSource):
                         "new_leader": diff.new_leader,
                         "previous_leader": diff.previous_leader,
                         "source_url": current.source_url,
-                        "new_top_org": resolve_top_model(current.entries).organization if resolve_top_model(current.entries) else "",
+                        "new_top_org": resolve_top_model(current.entries).organization
+                        if resolve_top_model(current.entries)
+                        else "",
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.HIGH,
@@ -287,8 +289,10 @@ class ArenaMonitor(SignalSource):
             )
 
         # Rank changes
+        curr_by_name = current.by_model_name()
         for rc in diff.rank_changes:
             urgency = SignalUrgency.HIGH if rc.new_rank_ub == 1 or rc.old_rank_ub == 1 else SignalUrgency.MEDIUM
+            curr_entry = curr_by_name.get(rc.model_name)
             signals.append(
                 Signal(
                     source=self.name,
@@ -302,6 +306,9 @@ class ArenaMonitor(SignalSource):
                         "new_rank": rc.new_rank,
                         "old_score": rc.old_score,
                         "new_score": rc.new_score,
+                        "votes": curr_entry.votes if curr_entry else 0,
+                        "is_preliminary": curr_entry.is_preliminary if curr_entry else False,
+                        "release_date": curr_entry.release_date if curr_entry else "",
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=urgency,
@@ -361,6 +368,7 @@ class ArenaMonitor(SignalSource):
                         "score": entry.score,
                         "votes": entry.votes,
                         "is_preliminary": entry.is_preliminary,
+                        "release_date": entry.release_date,
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=urgency,

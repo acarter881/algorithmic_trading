@@ -110,6 +110,22 @@ def extract_next_data(html: str) -> list[dict[str, Any]] | None:
     return _find_leaderboard_array(payload)
 
 
+def extract_next_payload(html: str) -> dict[str, Any] | None:
+    """Extract the raw Next.js ``__NEXT_DATA__`` payload from page HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    script_tag = soup.find("script", id="__NEXT_DATA__")
+    if not isinstance(script_tag, Tag) or not script_tag.string:
+        return None
+
+    try:
+        payload = json.loads(script_tag.string)
+    except json.JSONDecodeError:
+        logger.warning("next_data_invalid_json")
+        return None
+
+    return payload if isinstance(payload, dict) else None
+
+
 def _find_leaderboard_array(obj: Any, depth: int = 0) -> list[dict[str, Any]] | None:
     """Recursively search a JSON tree for an array that looks like leaderboard data."""
     if depth > 8:
@@ -366,9 +382,7 @@ def extract_pairwise_aggregates(payload: Any) -> dict[str, PairwiseAggregate]:
         try:
             with_payload = json.loads(payload)
         except (json.JSONDecodeError, ValueError):
-            next_data = extract_next_data(payload)
-            if next_data:
-                with_payload = {"leaderboardData": next_data}
+            with_payload = extract_next_payload(payload)
         payload = with_payload if with_payload is not None else payload
 
     data = _find_pairwise_data(payload)

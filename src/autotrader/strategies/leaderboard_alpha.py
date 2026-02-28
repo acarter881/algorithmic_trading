@@ -231,9 +231,10 @@ class LeaderboardAlphaStrategy(Strategy):
         if entry is None:
             return None
         prob = rank_to_probability(entry.rank_ub)
-        winner = resolve_top_model(list(self._rankings.values()))
-        if winner and winner.model_name == model_name:
-            prob = min(0.95, prob + 0.05)
+        if self._has_complete_tiebreak_inputs():
+            winner = resolve_top_model(list(self._rankings.values()))
+            if winner and winner.model_name == model_name:
+                prob = min(0.95, prob + 0.05)
         pairwise = self._pairwise.get(model_name)
         if pairwise and pairwise.total_pairwise_battles > 0:
             pairwise_edge = pairwise.average_pairwise_win_rate - 0.5
@@ -401,6 +402,7 @@ class LeaderboardAlphaStrategy(Strategy):
             score=data.get("score", 0.0),
             votes=data.get("votes", 0),
             is_preliminary=data.get("is_preliminary", False),
+            release_date=data.get("release_date", ""),
         )
 
         # Only trade if competitively ranked
@@ -464,6 +466,12 @@ class LeaderboardAlphaStrategy(Strategy):
 
     # ── Helpers ───────────────────────────────────────────────────────
 
+    def _has_complete_tiebreak_inputs(self) -> bool:
+        """Return True when settlement tie-break fields are present for all tracked models."""
+        if len(self._rankings) < 2:
+            return False
+        return all(e.votes > 0 and bool(e.release_date) for e in self._rankings.values())
+
     def _update_ranking(self, model_name: str, data: dict[str, Any]) -> None:
         """Update internal ranking from signal data."""
         old = self._rankings.get(model_name)
@@ -478,6 +486,7 @@ class LeaderboardAlphaStrategy(Strategy):
             ci_upper=old.ci_upper if old else 0.0,
             votes=data.get("votes", old.votes if old else 0),
             is_preliminary=data.get("is_preliminary", old.is_preliminary if old else False),
+            release_date=data.get("release_date", old.release_date if old else ""),
         )
 
     def _resolve_ticker(self, model_name: str) -> str | None:
