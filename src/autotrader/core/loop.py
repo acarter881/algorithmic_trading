@@ -62,6 +62,7 @@ class TradingLoop:
         self._engine: ExecutionEngine | None = None
         self._repo: TradingRepository | None = None
         self._alerter: DiscordAlerter | None = None
+        self._market_data_client: KalshiAPIClient | None = None
         self._fee_calc = FeeCalculator()
 
     # ── Lifecycle ─────────────────────────────────────────────────────
@@ -94,6 +95,15 @@ class TradingLoop:
         if market_data is None:
             market_data = self._bootstrap_market_data()
         await self._strategy.initialize(market_data, state_payload)
+
+        # Market data refresh client (runtime quote updates for tracked tickers)
+        self._market_data_client = KalshiAPIClient(self._config.kalshi)
+        try:
+            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+            self._market_data_client.connect(private_key_pem=private_key_pem)
+        except Exception:
+            logger.exception("market_data_client_init_failed")
+            self._market_data_client = None
 
         # Risk manager
         self._risk = RiskManager(config=self._config.risk)
@@ -259,6 +269,9 @@ class TradingLoop:
         assert self._risk is not None
         assert self._engine is not None
 
+        # 0. Refresh tracked market quotes every tick so strategy uses current prices.
+        await self._refresh_market_data()
+
         # 1. Poll for signals
         signals = await self._monitor.poll()
         if not signals:
@@ -356,6 +369,25 @@ class TradingLoop:
                     "order_execution_failed",
                     f"Ticker: {result.order.ticker}, Error: {result.error}",
                 )
+
+    async def _refresh_market_data(self) -> None:
+        """Refresh quotes for all strategy-tracked tickers and route into strategy."""
+        if self._strategy is None or self._market_data_client is None:
+            return
+
+        for ticker in self._strategy.contracts:
+            try:
+                market = self._market_data_client.get_market(ticker)
+                await self._strategy.on_market_update(
+                    {
+                        "ticker": ticker,
+                        "yes_bid": market.yes_bid,
+                        "yes_ask": market.yes_ask,
+                        "last_price": market.last_price,
+                    }
+                )
+            except Exception:
+                logger.warning("market_data_refresh_failed", ticker=ticker, tick=self._tick_count)
 
     # ── Fill callback ─────────────────────────────────────────────────
 

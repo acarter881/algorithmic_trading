@@ -234,6 +234,46 @@ class TestTradingLoopTick:
         assert loop.tick_count == 1
         await loop.shutdown()
 
+    async def test_tick_refreshes_market_data_even_without_signals(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=48, yes_ask=50, last_price=49)
+        )
+
+        assert loop._strategy is not None
+        loop._strategy.on_market_update = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop._market_data_client.get_market.assert_called_once_with("KXTOPMODEL-GPT5")
+        loop._strategy.on_market_update.assert_called_once_with(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "yes_bid": 48,
+                "yes_ask": 50,
+                "last_price": 49,
+            }
+        )
+        await loop.shutdown()
+
     async def test_tick_with_signals_and_proposals(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
@@ -252,6 +292,37 @@ class TestTradingLoopTick:
         # Check that execution engine received orders
         assert loop.execution_engine is not None
         assert len(loop.execution_engine.orders) > 0
+        await loop.shutdown()
+
+    async def test_tick_market_refresh_can_change_proposal_outcome(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=88, yes_ask=90, last_price=89)
+        )
+
+        await loop._tick()
+
+        # Strategy fair value for rank_ub=1 is ~65; refreshed ask=90 should suppress buys.
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
 
     async def test_tick_risk_rejection(self) -> None:
