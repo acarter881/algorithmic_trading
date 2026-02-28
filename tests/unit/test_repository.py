@@ -65,7 +65,7 @@ def _fill_data(**overrides: object) -> dict:
         "is_paper": True,
         "client_order_id": "leaderboard_alpha-KXTOPMODEL-GPT5-abc123",
         "kalshi_fill_id": None,
-        "filled_at": "2026-02-27T12:00:00",
+        "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
     }
     defaults.update(overrides)
     return defaults  # type: ignore[return-value]
@@ -128,6 +128,7 @@ class TestRecordFill:
             row = rows[0]
             assert row.ticker == "KXTOPMODEL-GPT5"
             assert row.price_cents == 50
+            assert row.action == "buy"
             assert row.quantity == 5
             assert row.fee_cents == 4
             assert row.strategy == "leaderboard_alpha"
@@ -153,6 +154,69 @@ class TestRecordFill:
             assert pnl is not None
             assert pnl.trade_count == 2
             assert pnl.total_fees_cents == 10
+
+    def test_fill_uses_execution_timestamp_for_daily_bucket(self) -> None:
+        repo = _repo()
+        fill_day = datetime.date.today() - datetime.timedelta(days=1)
+        fill_timestamp = datetime.datetime.combine(fill_day, datetime.time(23, 59)).isoformat()
+
+        repo.record_fill(_fill_data(filled_at=fill_timestamp, fee_cents=3), strategy="leaderboard_alpha")
+
+        today_pnl = repo.get_daily_pnl("leaderboard_alpha")
+        yesterday_pnl = repo.get_daily_pnl("leaderboard_alpha", date=fill_day)
+
+        assert today_pnl is None
+        assert yesterday_pnl is not None
+        assert yesterday_pnl.trade_count == 1
+        assert yesterday_pnl.total_fees_cents == 3
+
+    def test_sell_action_reduces_yes_position_for_realized_pnl(self) -> None:
+        repo = _repo()
+        repo.record_fill(
+            _fill_data(side="yes", action="buy", price_cents=80, count=10, fee_cents=0), strategy="leaderboard_alpha"
+        )
+        repo.record_fill(
+            _fill_data(
+                side="yes",
+                action="sell",
+                price_cents=20,
+                count=10,
+                fee_cents=0,
+                kalshi_fill_id="fill-sell-close",
+            ),
+            strategy="leaderboard_alpha",
+        )
+
+        pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert pnl is not None
+        assert pnl.realized_pnl_cents == -600
+        assert pnl.unrealized_pnl_cents == 0
+
+    def test_realized_pnl_updates_after_winning_round_trip(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(side="yes", price_cents=40, count=10, fee_cents=0), strategy="leaderboard_alpha")
+        repo.record_fill(
+            _fill_data(side="no", price_cents=30, count=10, fee_cents=0, kalshi_fill_id="fill-win-close"),
+            strategy="leaderboard_alpha",
+        )
+
+        pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert pnl is not None
+        assert pnl.realized_pnl_cents == 300
+        assert pnl.unrealized_pnl_cents == 0
+
+    def test_realized_pnl_updates_after_losing_round_trip(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(side="yes", price_cents=70, count=10, fee_cents=0), strategy="leaderboard_alpha")
+        repo.record_fill(
+            _fill_data(side="no", price_cents=50, count=10, fee_cents=0, kalshi_fill_id="fill-loss-close"),
+            strategy="leaderboard_alpha",
+        )
+
+        pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert pnl is not None
+        assert pnl.realized_pnl_cents == -200
+        assert pnl.unrealized_pnl_cents == 0
 
 
 # ── Signal persistence ───────────────────────────────────────────────────

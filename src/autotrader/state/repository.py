@@ -9,6 +9,7 @@ initialization.
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -83,12 +84,14 @@ class TradingRepository:
                     kalshi_fill_id=fill_data.get("kalshi_fill_id"),
                     ticker=fill_data["ticker"],
                     side=fill_data["side"],
+                    action=fill_data.get("action", "buy"),
                     price_cents=fill_data["price_cents"],
                     quantity=fill_data["count"],
                     fee_cents=fill_data.get("fee_cents", 0),
                     is_taker=fill_data.get("is_taker", True),
                     is_paper=fill_data.get("is_paper", True),
                     strategy=strategy,
+                    filled_at=self._parse_filled_at(fill_data.get("filled_at")),
                 )
                 session.add(row)
                 session.commit()
@@ -198,30 +201,131 @@ class TradingRepository:
 
     def _update_daily_pnl(self, fill_data: dict[str, Any], strategy: str) -> None:
         """Update running daily P&L after a fill."""
-        today_dt = self._today_as_datetime()
+        fill_timestamp = self._parse_filled_at(fill_data.get("filled_at"))
+        day_start = datetime.datetime.combine(fill_timestamp.date(), datetime.time())
+        day_end = day_start + datetime.timedelta(days=1)
         try:
             with self._session_factory() as session:
-                row = session.query(DailyPnl).filter(DailyPnl.date == today_dt, DailyPnl.strategy == strategy).first()
+                row = session.query(DailyPnl).filter(DailyPnl.date == day_start, DailyPnl.strategy == strategy).first()
                 fee_cents = fill_data.get("fee_cents", 0)
                 is_paper = fill_data.get("is_paper", True)
 
+                fills = (
+                    session.query(Fill)
+                    .filter(
+                        Fill.strategy == strategy,
+                        Fill.filled_at >= day_start,
+                        Fill.filled_at < day_end,
+                    )
+                    .order_by(Fill.filled_at.asc(), Fill.id.asc())
+                    .all()
+                )
+                realized_pnl_cents, unrealized_pnl_cents = self._compute_intraday_pnl_from_fills(fills)
+
                 if row is None:
                     row = DailyPnl(
-                        date=today_dt,
+                        date=day_start,
                         strategy=strategy,
+                        realized_pnl_cents=realized_pnl_cents,
+                        unrealized_pnl_cents=unrealized_pnl_cents,
                         total_fees_cents=fee_cents,
                         trade_count=1,
                         is_paper=is_paper,
                     )
                     session.add(row)
                 else:
+                    row.realized_pnl_cents = realized_pnl_cents
+                    row.unrealized_pnl_cents = unrealized_pnl_cents
                     row.total_fees_cents += fee_cents
                     row.trade_count += 1
 
                 session.commit()
-                logger.debug("daily_pnl_updated", strategy=strategy, date=str(today_dt))
+                logger.debug("daily_pnl_updated", strategy=strategy, date=str(day_start))
         except Exception:
             logger.exception("daily_pnl_update_error", strategy=strategy)
+
+    @staticmethod
+    def _parse_filled_at(raw_filled_at: Any) -> datetime.datetime:
+        if isinstance(raw_filled_at, datetime.datetime):
+            return raw_filled_at
+        if isinstance(raw_filled_at, str):
+            value = raw_filled_at.strip()
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
+            try:
+                parsed = datetime.datetime.fromisoformat(value)
+                return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+            except ValueError:
+                logger.warning("fill_timestamp_parse_failed", filled_at=raw_filled_at)
+        return datetime.datetime.utcnow()
+
+    @dataclass
+    class _TickerPnlState:
+        qty: int = 0
+        avg_cost_cents: float = 0.0
+        mark_price_cents: float = 0.0
+
+    @classmethod
+    def _compute_intraday_pnl_from_fills(cls, fills: list[Fill]) -> tuple[int, int]:
+        realized = 0.0
+        per_ticker_state: dict[str, TradingRepository._TickerPnlState] = {}
+
+        for fill in fills:
+            state = per_ticker_state.setdefault(fill.ticker, cls._TickerPnlState())
+            delta_qty, trade_yes_price = cls._yes_equivalent_trade(fill)
+            if delta_qty == 0:
+                continue
+
+            state.mark_price_cents = trade_yes_price
+            realized += cls._apply_fill_to_state(state, delta_qty, trade_yes_price)
+            realized -= float(fill.fee_cents)
+
+        unrealized = 0.0
+        for state in per_ticker_state.values():
+            if state.qty > 0:
+                unrealized += (state.mark_price_cents - state.avg_cost_cents) * state.qty
+            elif state.qty < 0:
+                unrealized += (state.avg_cost_cents - state.mark_price_cents) * abs(state.qty)
+
+        return int(round(realized)), int(round(unrealized))
+
+    @staticmethod
+    def _yes_equivalent_trade(fill: Fill) -> tuple[int, float]:
+        side = str(fill.side).lower()
+        action = str(fill.action).lower()
+
+        signed_qty = fill.quantity if side == "yes" else -fill.quantity
+        if action == "sell":
+            signed_qty = -signed_qty
+
+        yes_equivalent_price = float(fill.price_cents if side == "yes" else 100 - fill.price_cents)
+        return signed_qty, yes_equivalent_price
+
+    @staticmethod
+    def _apply_fill_to_state(state: _TickerPnlState, delta_qty: int, trade_price_cents: float) -> float:
+        current_qty = state.qty
+        if current_qty == 0 or (current_qty > 0 and delta_qty > 0) or (current_qty < 0 and delta_qty < 0):
+            new_qty = current_qty + delta_qty
+            state.avg_cost_cents = (abs(current_qty) * state.avg_cost_cents + abs(delta_qty) * trade_price_cents) / abs(
+                new_qty
+            )
+            state.qty = new_qty
+            return 0.0
+
+        closing_qty = min(abs(current_qty), abs(delta_qty))
+        if current_qty > 0:
+            realized = (trade_price_cents - state.avg_cost_cents) * closing_qty
+        else:
+            realized = (state.avg_cost_cents - trade_price_cents) * closing_qty
+
+        new_qty = current_qty + delta_qty
+        if new_qty == 0:
+            state.avg_cost_cents = 0.0
+        elif (current_qty > 0 > new_qty) or (current_qty < 0 < new_qty):
+            state.avg_cost_cents = trade_price_cents
+        state.qty = new_qty
+
+        return realized
 
     # ── Queries ──────────────────────────────────────────────────────
 

@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from autotrader.config.models import RiskConfig, RiskGlobalConfig, RiskStrategyConfig
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager, RiskVerdict
+from autotrader.state.models import Base
+from autotrader.state.repository import TradingRepository
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -327,6 +334,69 @@ class TestDailyLoss:
         rm = _manager(portfolio=_portfolio(daily_realized={"other_strategy": -50000}))
         decision = rm.evaluate(_order(strategy="leaderboard_alpha"))
         assert decision.approved
+
+    def test_rejects_from_persisted_repository_pnl(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        repo = TradingRepository(sessionmaker(bind=engine))
+
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 10,
+                "price_cents": 80,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-open",
+                "kalshi_fill_id": "fill-open",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "sell",
+                "count": 10,
+                "price_cents": 20,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-close",
+                "kalshi_fill_id": "fill-close",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 1)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        daily_pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert daily_pnl is not None
+        assert daily_pnl.realized_pnl_cents == -600
+
+        rm = _manager(
+            cfg=_config(
+                strategy_limits={
+                    "leaderboard_alpha": RiskStrategyConfig(
+                        max_position_per_contract=100,
+                        max_position_per_event=250,
+                        max_strategy_loss=5,
+                        min_edge_multiplier=2.5,
+                    )
+                }
+            ),
+            portfolio=_portfolio(
+                daily_realized={"leaderboard_alpha": daily_pnl.realized_pnl_cents},
+                daily_unrealized={"leaderboard_alpha": daily_pnl.unrealized_pnl_cents},
+            ),
+        )
+
+        decision = rm.evaluate(_order())
+        assert not decision.approved
+        assert any(r.check_name == "daily_loss" for r in decision.results if r.verdict == RiskVerdict.REJECTED)
 
 
 # ── Portfolio Exposure ───────────────────────────────────────────────────
