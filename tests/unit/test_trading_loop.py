@@ -6,6 +6,7 @@ import asyncio
 import datetime
 from unittest.mock import ANY, AsyncMock, MagicMock
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -99,7 +100,20 @@ class TestTradingLoopInit:
         config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
 
         loop = TradingLoop(config)
-        await loop.initialize()
+        await loop.initialize(
+            market_data={
+                "markets": [
+                    {
+                        "ticker": "KXTOPMODEL-GPT5",
+                        "title": "Top model",
+                        "subtitle": "GPT-5",
+                        "yes_bid": 44,
+                        "yes_ask": 46,
+                        "last_price": 45,
+                    }
+                ]
+            }
+        )
 
         assert mock_client.connect.call_count >= 1
         mock_client.connect.assert_any_call(private_key_pem=ANY)
@@ -217,6 +231,35 @@ class TestTradingLoopInit:
         assert loop.strategy is not None
         assert loop.strategy._resolve_ticker("GPT-5") == "KXTOPMODEL-GPT5"
         assert loop.strategy._resolve_ticker("Claude") == "KXLLM1-CLAUDE"
+
+        await loop.shutdown()
+
+    async def test_initialize_production_raises_when_expected_series_missing_markets(self) -> None:
+        config = _config()
+        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
+
+        loop = TradingLoop(config)
+        with pytest.raises(RuntimeError, match="no_tradable_markets_loaded"):
+            await loop.initialize(market_data={"markets": []})
+
+    async def test_initialize_paper_mode_sends_repeated_alerts_when_series_missing_markets(self, monkeypatch) -> None:
+        mock_alerter = MagicMock()
+        mock_alerter.enabled = True
+        mock_alerter.initialize = AsyncMock()
+        mock_alerter.teardown = AsyncMock()
+        mock_alerter.send_error_alert = AsyncMock()
+        mock_alerter.send_system_alert = AsyncMock()
+
+        monkeypatch.setattr("autotrader.core.loop.DiscordAlerter", MagicMock(return_value=mock_alerter))
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data={"markets": []})
+
+        assert mock_alerter.send_error_alert.await_count == 3
+        assert mock_alerter.send_system_alert.await_count >= 4
+        first_error_call = mock_alerter.send_error_alert.await_args_list[0]
+        assert first_error_call.args[0] == "no_tradable_markets_loaded"
+        assert "Missing series: KXTOPMODEL" in first_error_call.args[1]
 
         await loop.shutdown()
 
