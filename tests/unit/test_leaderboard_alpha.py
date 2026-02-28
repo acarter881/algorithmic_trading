@@ -869,6 +869,42 @@ class TestMarketUpdate:
         assert c.yes_bid == 60
         assert c.yes_ask == 58  # unchanged
 
+    async def test_zero_values_do_not_overwrite_existing_quotes(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        await s.on_market_update({"ticker": "KXTOPMODEL-GPT5", "yes_bid": 0, "yes_ask": 0, "last_price": 0})
+
+        c = s.contracts["KXTOPMODEL-GPT5"]
+        assert c.yes_bid == 55
+        assert c.yes_ask == 58
+        assert c.last_price == 56
+
+    async def test_quote_update_changes_pricing_decision(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        signal = _signal(
+            "ranking_change",
+            {
+                "model_name": "GPT-5",
+                "old_rank_ub": 3,
+                "new_rank_ub": 1,
+                "old_rank": 3,
+                "new_rank": 1,
+                "old_score": 1300.0,
+                "new_score": 1350.0,
+            },
+        )
+
+        before_update = await s.on_signal(signal)
+        assert len(before_update) == 1
+
+        await s.on_market_update({"ticker": "KXTOPMODEL-GPT5", "yes_ask": 90, "last_price": 89})
+
+        after_update = await s.on_signal(signal)
+        assert after_update == []
+
     async def test_unknown_ticker_ignored(self) -> None:
         s = _strategy()
         await s.initialize(MARKET_DATA, None)

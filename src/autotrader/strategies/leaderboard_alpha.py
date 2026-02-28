@@ -181,8 +181,9 @@ class LeaderboardAlphaStrategy(Strategy):
         if isinstance(data, dict) and data.get("ticker") in self._contracts:
             c = self._contracts[data["ticker"]]
             for key in ("yes_bid", "yes_ask", "last_price"):
-                if key in data:
-                    setattr(c, key, data[key])
+                value = data.get(key)
+                if isinstance(value, int) and value > 0:
+                    setattr(c, key, value)
         return []
 
     async def on_fill(self, fill_data: Any) -> None:
