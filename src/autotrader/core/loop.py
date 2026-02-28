@@ -560,7 +560,7 @@ class TradingLoop:
             if resolved:
                 self._ticker_event_map[ticker] = resolved
                 return resolved
-        return ticker
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def _current_balance_cents(self) -> int:
         """Best-effort account balance lookup.

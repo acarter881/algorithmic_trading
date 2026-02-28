@@ -350,7 +350,7 @@ class RiskManager:
         mapped_event = self._portfolio.ticker_event_map.get(ticker)
         if mapped_event:
             return mapped_event
-        return ticker
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def _current_position_for_event(self, event_ticker: str) -> int:
         """Sum of all position quantities across an event."""

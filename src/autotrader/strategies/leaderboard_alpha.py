@@ -127,7 +127,7 @@ class LeaderboardAlphaStrategy(Strategy):
                 event_ticker = (
                     raw_event_ticker
                     if isinstance(raw_event_ticker, str) and raw_event_ticker
-                    else self._ticker_series(ticker)
+                    else self._fallback_event_ticker(ticker)
                 )
                 self._ticker_event_map[ticker] = event_ticker
                 self._contracts[ticker] = ContractView(
@@ -749,7 +749,11 @@ class LeaderboardAlphaStrategy(Strategy):
 
     def resolve_event_ticker(self, ticker: str) -> str:
         """Resolve the event ticker for a contract ticker."""
-        return self._ticker_event_map.get(ticker, self._ticker_series(ticker))
+        return self._ticker_event_map.get(ticker, self._fallback_event_ticker(ticker))
+
+    def _fallback_event_ticker(self, ticker: str) -> str:
+        """Fallback event derivation for payloads missing event_ticker."""
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def set_rankings(self, rankings: dict[str, LeaderboardEntry]) -> None:
         """Set the leaderboard rankings (for initialization / testing)."""

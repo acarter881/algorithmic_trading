@@ -358,7 +358,7 @@ class TestTradingLoopTick:
 
         assert loop._market_data_client is not None
         loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
-            return_value=MagicMock(yes_bid=48, yes_ask=50, last_price=49)
+            return_value=MagicMock(yes_bid=48, yes_ask=50, last_price=49, event_ticker="KXTOPMODEL-EV1")
         )
 
         assert loop._strategy is not None
@@ -373,6 +373,7 @@ class TestTradingLoopTick:
                 "yes_bid": 48,
                 "yes_ask": 50,
                 "last_price": 49,
+                "event_ticker": "KXTOPMODEL-EV1",
             }
         )
         await loop.shutdown()
@@ -641,9 +642,9 @@ class TestPortfolioSnapshot:
 
         loop = TradingLoop(_config())
         await loop.initialize(market_data=market_data)
-        assert loop.strategy is not None
-        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 130
-        loop.strategy.contracts["KXTOPMODEL-GEMINI3"].position = 110
+        assert loop._strategy is not None
+        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 130
+        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 110
 
         snapshot = loop.build_portfolio_snapshot()
 
@@ -700,9 +701,9 @@ class TestPortfolioSnapshot:
 
         loop = TradingLoop(_config())
         await loop.initialize(market_data=market_data)
-        assert loop.strategy is not None
-        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 140
-        loop.strategy.contracts["KXTOPMODEL-GEMINI3"].position = 90
+        assert loop._strategy is not None
+        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 140
+        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 90
 
         snapshot = loop.build_portfolio_snapshot()
 
