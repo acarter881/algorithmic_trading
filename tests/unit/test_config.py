@@ -103,15 +103,9 @@ class TestLoadConfig:
 
     def test_live_overlay(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
-        base.write_text(
-            yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "DEBUG"}})
-        )
+        base.write_text(yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "DEBUG"}}))
         live = tmp_path / "live.yaml"
-        live.write_text(
-            yaml.dump(
-                {"kalshi": {"environment": "production"}, "logging": {"level": "INFO"}}
-            )
-        )
+        live.write_text(yaml.dump({"kalshi": {"environment": "production"}, "logging": {"level": "INFO"}}))
 
         config = load_config(config_dir=tmp_path, environment="production")
         assert config.kalshi.environment == Environment.PRODUCTION
@@ -119,15 +113,9 @@ class TestLoadConfig:
 
     def test_environment_variable_overrides_live_overlay(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
-        base.write_text(
-            yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "INFO"}})
-        )
+        base.write_text(yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "INFO"}}))
         live = tmp_path / "live.yaml"
-        live.write_text(
-            yaml.dump(
-                {"kalshi": {"environment": "production"}, "logging": {"level": "WARNING"}}
-            )
-        )
+        live.write_text(yaml.dump({"kalshi": {"environment": "production"}, "logging": {"level": "WARNING"}}))
 
         with patch.dict(
             os.environ,
