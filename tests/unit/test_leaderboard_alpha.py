@@ -79,8 +79,6 @@ def _signal(
     )
 
 
-
-
 @pytest.fixture
 def org_market_data() -> dict[str, object]:
     return {
@@ -91,6 +89,7 @@ def org_market_data() -> dict[str, object]:
             {"ticker": "KXLLM1-GOOGLE", "subtitle": "Google", "yes_bid": 30, "yes_ask": 34, "last_price": 32},
         ]
     }
+
 
 MARKET_DATA = {
     "markets": [

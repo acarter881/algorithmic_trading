@@ -332,7 +332,9 @@ class LeaderboardAlphaStrategy(Strategy):
                             price_cents=100 - sell_price,
                             quantity=sell_qty,
                             urgency=urgency,
-                            rationale=(f"rank_ub {old_rank_ub}->{new_rank_ub}, overpriced by {-edge}c, reducing position"),
+                            rationale=(
+                                f"rank_ub {old_rank_ub}->{new_rank_ub}, overpriced by {-edge}c, reducing position"
+                            ),
                         )
                     )
         return orders
@@ -386,8 +388,13 @@ class LeaderboardAlphaStrategy(Strategy):
                         )
                     )
         # Also trade organization leader on KXLLM1 contracts.
-        new_org = data.get("new_organization") or self._rankings.get(new_leader, LeaderboardEntry(model_name="")).organization
-        prev_org = data.get("previous_organization") or self._rankings.get(previous_leader, LeaderboardEntry(model_name="")).organization
+        new_org = (
+            data.get("new_organization") or self._rankings.get(new_leader, LeaderboardEntry(model_name="")).organization
+        )
+        prev_org = (
+            data.get("previous_organization")
+            or self._rankings.get(previous_leader, LeaderboardEntry(model_name="")).organization
+        )
 
         if isinstance(new_org, str) and new_org:
             org_ticker = self._resolve_ticker(new_org, series="KXLLM1")
