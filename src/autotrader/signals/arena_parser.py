@@ -465,7 +465,7 @@ def _extract_headers(table: Tag) -> list[str]:
 
     # Fallback: first row of the table
     first_row = table.find("tr")
-    if first_row:
+    if isinstance(first_row, Tag):
         return [_clean_cell(th).lower() for th in first_row.find_all(["th", "td"])]
     return []
 
