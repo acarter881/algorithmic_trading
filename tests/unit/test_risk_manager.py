@@ -376,7 +376,10 @@ class TestPortfolioExposure:
             )
         }
         positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=500, avg_cost_cents=90)]
-        rm = _manager(cfg=_config(strategy_limits=relaxed_limits), portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        rm = _manager(
+            cfg=_config(strategy_limits=relaxed_limits),
+            portfolio=_portfolio(balance_cents=100_000, positions=positions),
+        )
         decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=90, quantity=100))
         assert decision.approved
 
@@ -390,7 +393,10 @@ class TestPortfolioExposure:
             )
         }
         positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=-600, avg_cost_cents=95)]
-        rm = _manager(cfg=_config(strategy_limits=relaxed_limits), portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        rm = _manager(
+            cfg=_config(strategy_limits=relaxed_limits),
+            portfolio=_portfolio(balance_cents=100_000, positions=positions),
+        )
         decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=95, quantity=100))
         assert not decision.approved
 

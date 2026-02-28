@@ -347,6 +347,32 @@ class TestPortfolioSnapshot:
         assert len(snap.positions) == 0
         await loop.shutdown()
 
+    async def test_build_snapshot_preserves_signed_position_quantity(self, monkeypatch) -> None:
+        market = MagicMock(
+            ticker="KXTOPMODEL-GPT5",
+            title="Top model",
+            subtitle="GPT-5",
+            yes_bid=44,
+            yes_ask=46,
+            last_price=45,
+        )
+        monkeypatch.setattr(
+            "autotrader.core.loop.fetch_markets_for_series",
+            AsyncMock(return_value=[market]),
+        )
+
+        loop = TradingLoop(_config())
+        await loop.initialize()
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = -95
+
+        snap = loop.build_portfolio_snapshot()
+
+        assert len(snap.positions) == 1
+        assert snap.positions[0].ticker == "KXTOPMODEL-GPT5"
+        assert snap.positions[0].quantity == -95
+        await loop.shutdown()
+
 
 # ── Persistence integration ──────────────────────────────────────────────
 
