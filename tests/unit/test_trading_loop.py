@@ -23,8 +23,8 @@ from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
-from autotrader.state.repository import TradingRepository
 from autotrader.state.models import Signal as SignalRow
+from autotrader.state.repository import TradingRepository
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
