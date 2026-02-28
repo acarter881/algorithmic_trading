@@ -23,7 +23,7 @@ from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
-from autotrader.signals.arena_monitor import ArenaMonitorFailureThresholdExceeded
+from autotrader.signals.arena_monitor import ArenaMonitorFailureThresholdError
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
 from autotrader.state.models import Signal as SignalRow
@@ -272,7 +272,7 @@ class TestTradingLoopTick:
 
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(
-            side_effect=ArenaMonitorFailureThresholdExceeded(
+            side_effect=ArenaMonitorFailureThresholdError(
                 consecutive_failures=5,
                 max_consecutive_failures=5,
                 urls_attempted=["https://arena.ai/leaderboard", "https://lmarena.ai/leaderboard"],
@@ -302,7 +302,7 @@ class TestTradingLoopTick:
 
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(
-            side_effect=ArenaMonitorFailureThresholdExceeded(
+            side_effect=ArenaMonitorFailureThresholdError(
                 consecutive_failures=5,
                 max_consecutive_failures=5,
                 urls_attempted=["https://arena.ai/leaderboard"],

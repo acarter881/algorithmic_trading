@@ -39,7 +39,7 @@ DEFAULT_SCORE_SHIFT_THRESHOLD = 3.0
 TARGET_SERIES = ["KXTOPMODEL", "KXLLM1"]
 
 
-class ArenaMonitorFailureThresholdExceeded(RuntimeError):
+class ArenaMonitorFailureThresholdError(RuntimeError):
     """Raised when leaderboard fetch failures hit the configured threshold."""
 
     def __init__(self, consecutive_failures: int, max_consecutive_failures: int, urls_attempted: list[str]) -> None:
@@ -144,7 +144,7 @@ class ArenaMonitor(SignalSource):
                 max_failures=self._config.max_consecutive_failures,
                 urls_attempted=urls,
             )
-            raise ArenaMonitorFailureThresholdExceeded(
+            raise ArenaMonitorFailureThresholdError(
                 consecutive_failures=self._consecutive_failures,
                 max_consecutive_failures=self._config.max_consecutive_failures,
                 urls_attempted=urls,

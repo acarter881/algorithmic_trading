@@ -25,7 +25,7 @@ from autotrader.api.client import KalshiAPIClient, MarketInfo
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
-from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdExceeded
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.state.repository import TradingRepository
 from autotrader.strategies.leaderboard_alpha import LeaderboardAlphaStrategy
 from autotrader.utils.fees import FeeCalculator
@@ -315,7 +315,7 @@ class TradingLoop:
         # 1. Poll for signals
         try:
             signals = await self._monitor.poll()
-        except ArenaMonitorFailureThresholdExceeded as failure:
+        except ArenaMonitorFailureThresholdError as failure:
             await self._handle_arena_monitor_failure_threshold(failure)
             return
 
@@ -417,7 +417,7 @@ class TradingLoop:
 
     async def _handle_arena_monitor_failure_threshold(
         self,
-        failure: ArenaMonitorFailureThresholdExceeded,
+        failure: ArenaMonitorFailureThresholdError,
     ) -> None:
         """Protective response when Arena monitor repeatedly fails."""
         details = {

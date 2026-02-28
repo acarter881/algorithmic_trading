@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from autotrader.config.models import ArenaMonitorConfig
-from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdExceeded
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.signals.arena_types import (
     LeaderboardEntry,
     LeaderboardSnapshot,
@@ -410,7 +410,7 @@ class TestFetching:
             snapshot = await monitor._fetch_leaderboard()
             assert snapshot is None
 
-            with pytest.raises(ArenaMonitorFailureThresholdExceeded) as exc:
+            with pytest.raises(ArenaMonitorFailureThresholdError) as exc:
                 await monitor._fetch_leaderboard()
 
         assert monitor.consecutive_failures == 2
