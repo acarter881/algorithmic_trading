@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime  # noqa: TCH003
 from dataclasses import dataclass, field
 
+from autotrader.signals.settlement import resolve_top_model, resolve_top_org
+
 
 @dataclass(frozen=True)
 class LeaderboardEntry:
@@ -88,25 +90,16 @@ class LeaderboardSnapshot:
 
     @property
     def top_model(self) -> str | None:
-        """Model with the best (lowest) Rank(UB)."""
-        if not self.entries:
+        """Model resolved by settlement tie-break rules."""
+        winner = resolve_top_model(self.entries)
+        if winner is None:
             return None
-        best = min(
-            self.entries,
-            key=lambda e: e.rank_ub if e.rank_ub > 0 else float("inf"),
-        )
-        return best.model_name
+        return winner.model_name
 
     @property
     def top_org(self) -> str | None:
-        """Organization of the top-ranked model."""
-        if not self.entries:
-            return None
-        best = min(
-            self.entries,
-            key=lambda e: e.rank_ub if e.rank_ub > 0 else float("inf"),
-        )
-        return best.organization
+        """Organization resolved by settlement tie-break rules."""
+        return resolve_top_org(self.entries)
 
     def by_model_name(self) -> dict[str, LeaderboardEntry]:
         """Index entries by model name for O(1) lookup."""
