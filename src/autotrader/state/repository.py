@@ -343,3 +343,26 @@ class TradingRepository:
         """Get total trades today for a strategy."""
         pnl = self.get_daily_pnl(strategy)
         return pnl.trade_count if pnl else 0
+
+    def get_net_positions_by_ticker(self, strategy: str) -> dict[str, int]:
+        """Compute current net YES-equivalent position by ticker for a strategy."""
+        try:
+            with self._session_factory() as session:
+                fills = (
+                    session.query(Fill)
+                    .filter(Fill.strategy == strategy)
+                    .order_by(Fill.filled_at.asc(), Fill.id.asc())
+                    .all()
+                )
+
+            positions: dict[str, int] = {}
+            for fill in fills:
+                delta_qty, _ = self._yes_equivalent_trade(fill)
+                if delta_qty == 0:
+                    continue
+                positions[fill.ticker] = positions.get(fill.ticker, 0) + delta_qty
+
+            return {ticker: qty for ticker, qty in positions.items() if qty != 0}
+        except Exception:
+            logger.exception("net_positions_query_error", strategy=strategy)
+            return {}

@@ -81,9 +81,18 @@ class TradingLoop:
             config=self._config.leaderboard_alpha,
             fee_calculator=self._fee_calc,
         )
+
+        # Database repository (optional — gracefully degrades if not provided)
+        state_payload: dict[str, Any] | None = None
+        if session_factory is not None:
+            self._repo = TradingRepository(session_factory)
+            state_payload = {
+                "positions": self._repo.get_net_positions_by_ticker(self._strategy.name),
+            }
+
         if market_data is None:
             market_data = self._bootstrap_market_data()
-        await self._strategy.initialize(market_data, None)
+        await self._strategy.initialize(market_data, state_payload)
 
         # Risk manager
         self._risk = RiskManager(config=self._config.risk)
@@ -100,10 +109,6 @@ class TradingLoop:
 
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)
-
-        # Database repository (optional — gracefully degrades if not provided)
-        if session_factory is not None:
-            self._repo = TradingRepository(session_factory)
 
         # Discord alerter
         self._alerter = DiscordAlerter(self._config.discord)
