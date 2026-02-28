@@ -283,12 +283,8 @@ class TradingRepository:
         current_qty = state.qty
         if current_qty == 0 or (current_qty > 0 and delta_qty > 0) or (current_qty < 0 and delta_qty < 0):
             new_qty = current_qty + delta_qty
-            state.avg_cost_cents = (
-                (
-                    abs(current_qty) * state.avg_cost_cents
-                    + abs(delta_qty) * trade_price_cents
-                )
-                / abs(new_qty)
+            state.avg_cost_cents = (abs(current_qty) * state.avg_cost_cents + abs(delta_qty) * trade_price_cents) / abs(
+                new_qty
             )
             state.qty = new_qty
             return 0.0
