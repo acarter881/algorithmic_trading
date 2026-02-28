@@ -210,6 +210,18 @@ class TestPositionPerContract:
         decision = rm.evaluate(_order(quantity=10))
         assert not decision.approved
 
+    def test_no_order_reduces_yes_position(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL", quantity=95)]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+        decision = rm.evaluate(_order(side="no", quantity=10))
+        assert decision.approved
+
+    def test_no_order_increases_opposite_side_exposure(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL", quantity=-95)]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+        decision = rm.evaluate(_order(side="no", quantity=10))
+        assert not decision.approved
+
 
 # ── Position Per Event ───────────────────────────────────────────────────
 
@@ -255,6 +267,19 @@ class TestPositionPerEvent:
         # per-contract for GPT5 = 50 + 50 = 100 = max → approved
         decision = rm.evaluate(order)
         assert decision.approved
+
+    def test_mixed_yes_no_flows_respect_event_limit(self) -> None:
+        positions = [
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=170),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=80),
+        ]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+
+        reducing_order = _order(ticker="KXTOPMODEL-GPT5", side="no", quantity=15)
+        assert rm.evaluate(reducing_order).approved
+
+        increasing_order = _order(ticker="KXTOPMODEL-GPT5", side="yes", quantity=1)
+        assert not rm.evaluate(increasing_order).approved
 
 
 # ── Daily Loss ───────────────────────────────────────────────────────────
@@ -339,6 +364,18 @@ class TestPortfolioExposure:
         # order cost = 50 * 10 = 500c / 100000c = 0.5% << 60%
         decision = rm.evaluate(_order(price_cents=50, quantity=10))
         assert decision.approved
+
+    def test_no_order_can_reduce_gross_exposure(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=500, avg_cost_cents=90)]
+        rm = _manager(portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=90, quantity=100))
+        assert decision.approved
+
+    def test_no_order_rejected_when_increasing_no_exposure(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=-600, avg_cost_cents=95)]
+        rm = _manager(portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=95, quantity=100))
+        assert not decision.approved
 
 
 # ── Batch Evaluation ─────────────────────────────────────────────────────
