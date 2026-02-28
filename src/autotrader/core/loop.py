@@ -390,7 +390,7 @@ class TradingLoop:
                         PositionInfo(
                             ticker=ticker,
                             event_ticker=ticker.rsplit("-", 1)[0] if "-" in ticker else ticker,
-                            quantity=abs(contract.position),
+                            quantity=contract.position,
                             avg_cost_cents=float(contract.last_price or contract.yes_ask),
                         )
                     )

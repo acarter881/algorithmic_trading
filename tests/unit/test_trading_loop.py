@@ -347,6 +347,32 @@ class TestPortfolioSnapshot:
         assert len(snap.positions) == 0
         await loop.shutdown()
 
+    async def test_build_snapshot_preserves_signed_position_quantity(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = -95
+
+        snap = loop.build_portfolio_snapshot()
+
+        assert len(snap.positions) == 1
+        assert snap.positions[0].ticker == "KXTOPMODEL-GPT5"
+        assert snap.positions[0].quantity == -95
+        await loop.shutdown()
+
 
 # ── Persistence integration ──────────────────────────────────────────────
 
