@@ -17,6 +17,7 @@ table strategy only works if the page is server-side rendered.
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import json
 import re
@@ -82,7 +83,7 @@ def parse_json_entries(data: list[dict[str, Any]]) -> list[LeaderboardEntry]:
                 ci_upper=_safe_float(_get_first(row, _CI_UPPER_KEYS, 0.0)),
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD,
-                release_date=str(_get_first(row, _RELEASE_KEYS, "")),
+                release_date=_normalize_release_date(str(_get_first(row, _RELEASE_KEYS, ""))),
             )
         )
 
@@ -218,6 +219,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
         ci_lower, ci_upper = _parse_ci(cell_texts[col_map["ci"]]) if "ci" in col_map else (0.0, 0.0)
         votes = _safe_int(cell_texts[col_map["votes"]]) if "votes" in col_map else 0
         org = cell_texts[col_map["org"]] if "org" in col_map else ""
+        release_date = cell_texts[col_map["release_date"]] if "release_date" in col_map else ""
 
         entries.append(
             LeaderboardEntry(
@@ -231,7 +233,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
-                release_date="",
+                release_date=_normalize_release_date(release_date),
             )
         )
 
@@ -311,6 +313,22 @@ def parse_csv(content: str) -> list[LeaderboardEntry]:
                 if org:
                     break
 
+        # Release date (optional)
+        release_date = ""
+        for key in (
+            "release_date",
+            "release date",
+            "released",
+            "released_at",
+            "release_time",
+            "launch_date",
+            "launch date",
+        ):
+            if key in field_map:
+                release_date = _normalize_release_date(row.get(field_map[key], ""))
+                if release_date:
+                    break
+
         entries.append(
             LeaderboardEntry(
                 model_name=name,
@@ -323,7 +341,7 @@ def parse_csv(content: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
-                release_date="",
+                release_date=release_date,
             )
         )
 
@@ -478,6 +496,7 @@ _COLUMN_ALIASES: dict[str, list[str]] = {
     "ci": ["95% ci", "ci", "confidence interval", "95% confidence interval", "ci (95%)"],
     "votes": ["votes", "battles", "num battles", "num_battles", "total votes"],
     "org": ["organization", "org", "provider", "developer", "company"],
+    "release_date": ["release date", "released", "release_date", "released at", "launch date", "launch_date"],
 }
 
 
@@ -574,3 +593,59 @@ def _safe_float(value: Any) -> float:
         except (ValueError, OverflowError):
             return 0.0
     return 0.0
+
+
+def _normalize_release_date(value: str) -> str:
+    """Normalise release dates into sortable ISO-like strings when possible.
+
+    Assumptions:
+    - Unambiguous numeric dates are parsed and emitted as ``YYYY-MM-DD``.
+    - ``MM/YYYY`` and month-name formats are emitted as ``YYYY-MM``.
+    - Year-only values are preserved as ``YYYY``.
+    - Ambiguous numeric dates (e.g. ``03/04/2025``) are preserved raw.
+    """
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    if re.fullmatch(r"\d{4}", raw):
+        return raw
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}", raw):
+        parts = re.split(r"[-/]", raw)
+        return f"{parts[0]}-{int(parts[1]):02d}"
+
+    iso_candidate = raw.replace("/", "-").replace(".", "-")
+    m_iso = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", iso_candidate)
+    if m_iso:
+        y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        try:
+            return dt.date(y, mo, d).isoformat()
+        except ValueError:
+            return raw
+
+    m_num = re.fullmatch(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", raw)
+    if m_num:
+        a, b, y = int(m_num.group(1)), int(m_num.group(2)), int(m_num.group(3))
+        if a <= 12 and b <= 12:
+            return raw
+        month, day = (a, b) if a <= 12 else (b, a)
+        try:
+            return dt.date(y, month, day).isoformat()
+        except ValueError:
+            return raw
+
+    cleaned = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", raw, flags=re.IGNORECASE)
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
+        try:
+            return dt.datetime.strptime(cleaned, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            parsed = dt.datetime.strptime(cleaned, fmt)
+            return f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            continue
+
+    return raw

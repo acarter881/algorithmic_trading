@@ -51,6 +51,7 @@ def _entry(
     votes: int = 10000,
     is_preliminary: bool = False,
     organization: str = "OpenAI",
+    release_date: str = "",
 ) -> LeaderboardEntry:
     return LeaderboardEntry(
         model_name=name,
@@ -60,6 +61,7 @@ def _entry(
         score=score,
         votes=votes,
         is_preliminary=is_preliminary,
+        release_date=release_date,
     )
 
 
@@ -1266,6 +1268,16 @@ class TestSettlementBonusGuard:
         )
         fv = s.estimate_fair_value("A")
         assert fv == 65
+
+    def test_complete_tiebreak_inputs_when_votes_and_release_dates_present(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "A": _entry(name="A", rank_ub=1, score=1500, votes=1000, release_date="2025-01-01"),
+                "B": _entry(name="B", rank_ub=1, score=1500, votes=1200, release_date="2025-02-01"),
+            }
+        )
+        assert s._has_complete_tiebreak_inputs() is True
 
 
 class TestOrgContracts:
