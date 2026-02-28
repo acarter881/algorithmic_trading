@@ -270,8 +270,9 @@ class TestPositionPerEvent:
 
     def test_mixed_yes_no_flows_respect_event_limit(self) -> None:
         positions = [
-            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=170),
-            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=80),
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=90),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=100),
+            PositionInfo(ticker="KXTOPMODEL-CLAUDE5", event_ticker="KXTOPMODEL-EV1", quantity=60),
         ]
         rm = _manager(portfolio=_portfolio(positions=positions))
 
@@ -366,14 +367,30 @@ class TestPortfolioExposure:
         assert decision.approved
 
     def test_no_order_can_reduce_gross_exposure(self) -> None:
+        relaxed_limits = {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=1_000,
+                max_position_per_event=2_000,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
         positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=500, avg_cost_cents=90)]
-        rm = _manager(portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        rm = _manager(cfg=_config(strategy_limits=relaxed_limits), portfolio=_portfolio(balance_cents=100_000, positions=positions))
         decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=90, quantity=100))
         assert decision.approved
 
     def test_no_order_rejected_when_increasing_no_exposure(self) -> None:
+        relaxed_limits = {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=1_000,
+                max_position_per_event=2_000,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
         positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=-600, avg_cost_cents=95)]
-        rm = _manager(portfolio=_portfolio(balance_cents=100_000, positions=positions))
+        rm = _manager(cfg=_config(strategy_limits=relaxed_limits), portfolio=_portfolio(balance_cents=100_000, positions=positions))
         decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=95, quantity=100))
         assert not decision.approved
 
