@@ -391,7 +391,7 @@ class TestPortfolioSnapshot:
                 "is_paper": True,
                 "client_order_id": "leaderboard_alpha-open",
                 "kalshi_fill_id": "fill-open",
-                "filled_at": "2026-02-27T12:00:00",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
             },
             strategy="leaderboard_alpha",
         )
@@ -407,7 +407,7 @@ class TestPortfolioSnapshot:
                 "is_paper": True,
                 "client_order_id": "leaderboard_alpha-close",
                 "kalshi_fill_id": "fill-close",
-                "filled_at": "2026-02-27T12:01:00",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 1)).isoformat(),
             },
             strategy="leaderboard_alpha",
         )

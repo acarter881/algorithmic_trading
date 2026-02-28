@@ -84,12 +84,14 @@ class TradingRepository:
                     kalshi_fill_id=fill_data.get("kalshi_fill_id"),
                     ticker=fill_data["ticker"],
                     side=fill_data["side"],
+                    action=fill_data.get("action", "buy"),
                     price_cents=fill_data["price_cents"],
                     quantity=fill_data["count"],
                     fee_cents=fill_data.get("fee_cents", 0),
                     is_taker=fill_data.get("is_taker", True),
                     is_paper=fill_data.get("is_paper", True),
                     strategy=strategy,
+                    filled_at=self._parse_filled_at(fill_data.get("filled_at")),
                 )
                 session.add(row)
                 session.commit()
@@ -199,11 +201,12 @@ class TradingRepository:
 
     def _update_daily_pnl(self, fill_data: dict[str, Any], strategy: str) -> None:
         """Update running daily P&L after a fill."""
-        today_dt = self._today_as_datetime()
-        tomorrow_dt = today_dt + datetime.timedelta(days=1)
+        fill_timestamp = self._parse_filled_at(fill_data.get("filled_at"))
+        day_start = datetime.datetime.combine(fill_timestamp.date(), datetime.time())
+        day_end = day_start + datetime.timedelta(days=1)
         try:
             with self._session_factory() as session:
-                row = session.query(DailyPnl).filter(DailyPnl.date == today_dt, DailyPnl.strategy == strategy).first()
+                row = session.query(DailyPnl).filter(DailyPnl.date == day_start, DailyPnl.strategy == strategy).first()
                 fee_cents = fill_data.get("fee_cents", 0)
                 is_paper = fill_data.get("is_paper", True)
 
@@ -211,8 +214,8 @@ class TradingRepository:
                     session.query(Fill)
                     .filter(
                         Fill.strategy == strategy,
-                        Fill.filled_at >= today_dt,
-                        Fill.filled_at < tomorrow_dt,
+                        Fill.filled_at >= day_start,
+                        Fill.filled_at < day_end,
                     )
                     .order_by(Fill.filled_at.asc(), Fill.id.asc())
                     .all()
@@ -221,7 +224,7 @@ class TradingRepository:
 
                 if row is None:
                     row = DailyPnl(
-                        date=today_dt,
+                        date=day_start,
                         strategy=strategy,
                         realized_pnl_cents=realized_pnl_cents,
                         unrealized_pnl_cents=unrealized_pnl_cents,
@@ -237,9 +240,24 @@ class TradingRepository:
                     row.trade_count += 1
 
                 session.commit()
-                logger.debug("daily_pnl_updated", strategy=strategy, date=str(today_dt))
+                logger.debug("daily_pnl_updated", strategy=strategy, date=str(day_start))
         except Exception:
             logger.exception("daily_pnl_update_error", strategy=strategy)
+
+    @staticmethod
+    def _parse_filled_at(raw_filled_at: Any) -> datetime.datetime:
+        if isinstance(raw_filled_at, datetime.datetime):
+            return raw_filled_at
+        if isinstance(raw_filled_at, str):
+            value = raw_filled_at.strip()
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
+            try:
+                parsed = datetime.datetime.fromisoformat(value)
+                return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+            except ValueError:
+                logger.warning("fill_timestamp_parse_failed", filled_at=raw_filled_at)
+        return datetime.datetime.utcnow()
 
     @dataclass
     class _TickerPnlState:
@@ -274,7 +292,12 @@ class TradingRepository:
     @staticmethod
     def _yes_equivalent_trade(fill: Fill) -> tuple[int, float]:
         side = str(fill.side).lower()
+        action = str(fill.action).lower()
+
         signed_qty = fill.quantity if side == "yes" else -fill.quantity
+        if action == "sell":
+            signed_qty = -signed_qty
+
         yes_equivalent_price = float(fill.price_cents if side == "yes" else 100 - fill.price_cents)
         return signed_qty, yes_equivalent_price
 

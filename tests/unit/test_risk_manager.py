@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -350,15 +352,15 @@ class TestDailyLoss:
                 "is_paper": True,
                 "client_order_id": "leaderboard_alpha-open",
                 "kalshi_fill_id": "fill-open",
-                "filled_at": "2026-02-27T12:00:00",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
             },
             strategy="leaderboard_alpha",
         )
         repo.record_fill(
             {
                 "ticker": "KXTOPMODEL-GPT5",
-                "side": "no",
-                "action": "buy",
+                "side": "yes",
+                "action": "sell",
                 "count": 10,
                 "price_cents": 20,
                 "fee_cents": 0,
@@ -366,7 +368,7 @@ class TestDailyLoss:
                 "is_paper": True,
                 "client_order_id": "leaderboard_alpha-close",
                 "kalshi_fill_id": "fill-close",
-                "filled_at": "2026-02-27T12:01:00",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 1)).isoformat(),
             },
             strategy="leaderboard_alpha",
         )
