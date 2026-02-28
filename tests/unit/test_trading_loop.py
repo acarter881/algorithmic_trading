@@ -373,6 +373,51 @@ class TestPortfolioSnapshot:
         assert snap.positions[0].quantity == -95
         await loop.shutdown()
 
+    async def test_build_snapshot_includes_persisted_daily_pnl(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop.repository is not None
+        loop.repository.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 5,
+                "price_cents": 40,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-open",
+                "kalshi_fill_id": "fill-open",
+                "filled_at": "2026-02-27T12:00:00",
+            },
+            strategy="leaderboard_alpha",
+        )
+        loop.repository.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "no",
+                "action": "buy",
+                "count": 5,
+                "price_cents": 30,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-close",
+                "kalshi_fill_id": "fill-close",
+                "filled_at": "2026-02-27T12:01:00",
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        snap = loop.build_portfolio_snapshot()
+
+        assert snap.daily_realized_pnl_cents.get("leaderboard_alpha") == 150
+        assert snap.daily_unrealized_pnl_cents.get("leaderboard_alpha") == 0
+        await loop.shutdown()
+
 
 # ── Persistence integration ──────────────────────────────────────────────
 

@@ -154,6 +154,32 @@ class TestRecordFill:
             assert pnl.trade_count == 2
             assert pnl.total_fees_cents == 10
 
+    def test_realized_pnl_updates_after_winning_round_trip(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(side="yes", price_cents=40, count=10, fee_cents=0), strategy="leaderboard_alpha")
+        repo.record_fill(
+            _fill_data(side="no", price_cents=30, count=10, fee_cents=0, kalshi_fill_id="fill-win-close"),
+            strategy="leaderboard_alpha",
+        )
+
+        pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert pnl is not None
+        assert pnl.realized_pnl_cents == 300
+        assert pnl.unrealized_pnl_cents == 0
+
+    def test_realized_pnl_updates_after_losing_round_trip(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(side="yes", price_cents=70, count=10, fee_cents=0), strategy="leaderboard_alpha")
+        repo.record_fill(
+            _fill_data(side="no", price_cents=50, count=10, fee_cents=0, kalshi_fill_id="fill-loss-close"),
+            strategy="leaderboard_alpha",
+        )
+
+        pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert pnl is not None
+        assert pnl.realized_pnl_cents == -200
+        assert pnl.unrealized_pnl_cents == 0
+
 
 # ── Signal persistence ───────────────────────────────────────────────────
 
