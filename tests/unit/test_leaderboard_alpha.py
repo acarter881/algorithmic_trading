@@ -1288,3 +1288,40 @@ class TestOrgContracts:
 
         assert any(o.ticker == "KXLLM1-GOOGLE" and o.side == "yes" for o in orders)
         assert any(o.ticker == "KXLLM1-OPENAI" and o.side == "no" for o in orders)
+
+
+class TestOrgStateMaintenance:
+    async def test_ranking_change_updates_organization_from_signal(self) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(
+            {
+                "markets": [
+                    {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 10, "yes_ask": 12, "last_price": 11},
+                    {"ticker": "KXLLM1-OPENAI", "subtitle": "OpenAI", "yes_bid": 10, "yes_ask": 12, "last_price": 11},
+                ]
+            },
+            None,
+        )
+
+        await s.on_signal(
+            _signal(
+                "ranking_change",
+                {
+                    "model_name": "GPT-5",
+                    "organization": "OpenAI",
+                    "old_rank_ub": 2,
+                    "new_rank_ub": 1,
+                    "old_rank": 2,
+                    "new_rank": 1,
+                },
+            )
+        )
+
+        assert s.rankings["GPT-5"].organization == "OpenAI"
+        assert s.estimate_org_fair_value("OpenAI") is not None
+
+    async def test_initialize_restores_org_ticker_map_state(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy()
+        await s.initialize(org_market_data, {"org_ticker_map": {"OpenAI": "KXLLM1-OPENAI"}})
+
+        assert s._org_ticker_map["OpenAI"] == "KXLLM1-OPENAI"

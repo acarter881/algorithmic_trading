@@ -141,6 +141,9 @@ class LeaderboardAlphaStrategy(Strategy):
                         total_pairwise_battles=int(pair.get("total_pairwise_battles", 0)),
                         average_pairwise_win_rate=float(pair.get("average_pairwise_win_rate", 0.0)),
                     )
+            for org_name, ticker in state.get("org_ticker_map", {}).items():
+                if isinstance(org_name, str) and isinstance(ticker, str):
+                    self._org_ticker_map[org_name] = ticker
         self._rebuild_org_rankings()
 
         logger.info("strategy_initialized", strategy=self.name, contracts=len(self._contracts))
@@ -574,7 +577,7 @@ class LeaderboardAlphaStrategy(Strategy):
         old = self._rankings.get(model_name)
         self._rankings[model_name] = LeaderboardEntry(
             model_name=model_name,
-            organization=old.organization if old else "",
+            organization=data.get("organization", old.organization if old else ""),
             rank=data.get("new_rank", data.get("rank", old.rank if old else 0)),
             rank_ub=data.get("new_rank_ub", data.get("rank_ub", old.rank_ub if old else 0)),
             rank_lb=old.rank_lb if old else 0,
