@@ -164,10 +164,11 @@ autotrader run --config-dir config
 
 Configuration is loaded in layers:
 1. `config/base.yaml` — defaults
-2. `config/paper.yaml` or `config/live.yaml` — environment overrides
+2. `config/paper.yaml` (demo) or `config/live.yaml` (production) — environment overlay
 3. `config/strategies/*.yaml` — strategy parameters
 4. `config/risk.yaml` — risk limits
-5. Environment variables (`AUTOTRADER__SECTION__KEY`)
+5. `config/signal_sources/*.yaml` — signal source parameters
+6. Environment variables (`AUTOTRADER__SECTION__KEY`) — highest precedence
 
 Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 

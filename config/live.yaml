@@ -1,0 +1,15 @@
+# Production environment overrides.
+# Keep this file explicit and conservative for real-money trading.
+
+kalshi:
+  environment: production
+
+database:
+  url: "sqlite:///autotrader_live.db"
+  echo: false
+
+logging:
+  level: INFO
+  json_output: true
+  log_dir: logs/live
+  rotate_days: 180
