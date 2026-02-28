@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from autotrader.config.models import ArenaMonitorConfig
-from autotrader.signals.arena_monitor import ArenaMonitor
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdExceeded
 from autotrader.signals.arena_types import (
     LeaderboardEntry,
     LeaderboardSnapshot,
@@ -395,6 +395,28 @@ class TestFetching:
 
         assert snapshot is None
         assert monitor.consecutive_failures == 1
+        await monitor.teardown()
+
+    @pytest.mark.asyncio
+    async def test_fetch_raises_when_failure_threshold_reached(self) -> None:
+        config = ArenaMonitorConfig(max_consecutive_failures=2)
+        monitor = ArenaMonitor(config=config)
+        await monitor.initialize()
+
+        async def mock_get(url: str) -> MagicMock:
+            raise httpx.RequestError("Connection refused")
+
+        with patch.object(monitor._http_client, "get", side_effect=mock_get):
+            snapshot = await monitor._fetch_leaderboard()
+            assert snapshot is None
+
+            with pytest.raises(ArenaMonitorFailureThresholdExceeded) as exc:
+                await monitor._fetch_leaderboard()
+
+        assert monitor.consecutive_failures == 2
+        assert exc.value.consecutive_failures == 2
+        assert exc.value.max_consecutive_failures == 2
+        assert exc.value.urls_attempted == [config.primary_url, *config.fallback_urls]
         await monitor.teardown()
 
     @pytest.mark.asyncio

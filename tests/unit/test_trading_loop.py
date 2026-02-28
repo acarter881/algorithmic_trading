@@ -23,6 +23,7 @@ from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
+from autotrader.signals.arena_monitor import ArenaMonitorFailureThresholdExceeded
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
 from autotrader.state.models import Signal as SignalRow
@@ -265,6 +266,65 @@ class TestTradingLoopInit:
 
 
 class TestTradingLoopTick:
+    async def test_tick_activates_kill_switch_on_arena_failure_threshold(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(
+            side_effect=ArenaMonitorFailureThresholdExceeded(
+                consecutive_failures=5,
+                max_consecutive_failures=5,
+                urls_attempted=["https://arena.ai/leaderboard", "https://lmarena.ai/leaderboard"],
+            )
+        )  # type: ignore[method-assign]
+
+        assert loop._alerter is not None
+        loop._alerter.send_error_alert = AsyncMock()  # type: ignore[method-assign]
+        loop._alerter.send_system_alert = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.risk_manager is not None
+        assert loop.risk_manager.kill_switch_active is True
+        assert loop.running is False
+        loop._alerter.send_error_alert.assert_called_once()
+        error_call = loop._alerter.send_error_alert.await_args
+        assert error_call.args[0] == "arena_failure_threshold_exceeded"
+        assert "consecutive_failures=5" in error_call.args[1]
+        assert "https://arena.ai/leaderboard" in error_call.args[1]
+
+        await loop.shutdown()
+
+    async def test_tick_blocks_orders_after_arena_failure_threshold_breached(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(
+            side_effect=ArenaMonitorFailureThresholdExceeded(
+                consecutive_failures=5,
+                max_consecutive_failures=5,
+                urls_attempted=["https://arena.ai/leaderboard"],
+            )
+        )  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.risk_manager is not None
+        assert loop.risk_manager.kill_switch_active
+
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
+
+        await loop.shutdown()
+
     async def test_tick_with_no_signals(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()

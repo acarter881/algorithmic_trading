@@ -39,6 +39,19 @@ DEFAULT_SCORE_SHIFT_THRESHOLD = 3.0
 TARGET_SERIES = ["KXTOPMODEL", "KXLLM1"]
 
 
+class ArenaMonitorFailureThresholdExceeded(RuntimeError):
+    """Raised when leaderboard fetch failures hit the configured threshold."""
+
+    def __init__(self, consecutive_failures: int, max_consecutive_failures: int, urls_attempted: list[str]) -> None:
+        self.consecutive_failures = consecutive_failures
+        self.max_consecutive_failures = max_consecutive_failures
+        self.urls_attempted = urls_attempted
+        super().__init__(
+            "Arena monitor fetch failures exceeded threshold "
+            f"({consecutive_failures}/{max_consecutive_failures})"
+        )
+
+
 class ArenaMonitor(SignalSource):
     """Monitors the LMSYS Chatbot Arena leaderboard for ranking changes.
 
@@ -121,7 +134,22 @@ class ArenaMonitor(SignalSource):
             "arena_fetch_all_failed",
             consecutive_failures=self._consecutive_failures,
             max_failures=self._config.max_consecutive_failures,
+            urls_attempted=urls,
         )
+
+        if self._consecutive_failures >= self._config.max_consecutive_failures:
+            logger.error(
+                "arena_failure_threshold_exceeded",
+                consecutive_failures=self._consecutive_failures,
+                max_failures=self._config.max_consecutive_failures,
+                urls_attempted=urls,
+            )
+            raise ArenaMonitorFailureThresholdExceeded(
+                consecutive_failures=self._consecutive_failures,
+                max_consecutive_failures=self._config.max_consecutive_failures,
+                urls_attempted=urls,
+            )
+
         return None
 
     async def _try_fetch(self, url: str) -> LeaderboardSnapshot | None:
