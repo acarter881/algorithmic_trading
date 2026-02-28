@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING
 
+import pytest
+
 from autotrader.config.models import LeaderboardAlphaConfig
 from autotrader.signals.arena_types import LeaderboardEntry
 from autotrader.signals.base import Signal, SignalUrgency
@@ -76,6 +78,19 @@ def _signal(
         urgency=urgency,
     )
 
+
+
+
+@pytest.fixture
+def org_market_data() -> dict[str, object]:
+    return {
+        "markets": [
+            {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 55, "yes_ask": 58, "last_price": 56},
+            {"ticker": "KXTOPMODEL-GEMINI3", "subtitle": "Gemini 3", "yes_bid": 18, "yes_ask": 22, "last_price": 20},
+            {"ticker": "KXLLM1-OPENAI", "subtitle": "OpenAI", "yes_bid": 42, "yes_ask": 46, "last_price": 44},
+            {"ticker": "KXLLM1-GOOGLE", "subtitle": "Google", "yes_bid": 30, "yes_ask": 34, "last_price": 32},
+        ]
+    }
 
 MARKET_DATA = {
     "markets": [
@@ -1205,3 +1220,72 @@ class TestSettlementBonusGuard:
         )
         fv = s.estimate_fair_value("A")
         assert fv == 65
+
+
+class TestOrgContracts:
+    async def test_kxllm1_mapping_uses_organization_names(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(org_market_data, None)
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        orders = await s.on_signal(
+            _signal(
+                "ranking_change",
+                {
+                    "model_name": "GPT-5",
+                    "old_rank_ub": 2,
+                    "new_rank_ub": 1,
+                    "old_rank": 2,
+                    "new_rank": 1,
+                },
+            )
+        )
+
+        assert s.model_ticker_map["GPT-5"] == "KXTOPMODEL-GPT5"
+        assert s._org_ticker_map["OpenAI"] == "KXLLM1-OPENAI"
+        assert {o.ticker for o in orders} >= {"KXTOPMODEL-GPT5", "KXLLM1-OPENAI"}
+
+    def test_org_fair_value_uses_top_org_resolution(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "OpenAI A": _entry(name="OpenAI A", rank_ub=1, score=1400, votes=10000, organization="OpenAI"),
+                "OpenAI B": _entry(name="OpenAI B", rank_ub=2, score=1390, votes=9000, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=1, score=1399, votes=10000, organization="Google"),
+            }
+        )
+
+        # OpenAI wins tiebreak via score and receives winner bonus.
+        assert s.estimate_org_fair_value("OpenAI") == 70
+        assert s.estimate_org_fair_value("Google") == 65
+
+    async def test_org_leader_change_buy_sell_logic(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(
+            org_market_data,
+            {"positions": {"KXTOPMODEL-GPT5": 4, "KXLLM1-OPENAI": 3}},
+        )
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        orders = await s.on_signal(
+            _signal(
+                "new_leader",
+                {
+                    "new_leader": "Gemini 3",
+                    "previous_leader": "GPT-5",
+                },
+            )
+        )
+
+        assert any(o.ticker == "KXLLM1-GOOGLE" and o.side == "yes" for o in orders)
+        assert any(o.ticker == "KXLLM1-OPENAI" and o.side == "no" for o in orders)
