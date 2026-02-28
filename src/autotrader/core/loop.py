@@ -64,6 +64,7 @@ class TradingLoop:
         self._alerter: DiscordAlerter | None = None
         self._market_data_client: KalshiAPIClient | None = None
         self._fee_calc = FeeCalculator()
+        self._ticker_event_map: dict[str, str] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -94,6 +95,10 @@ class TradingLoop:
 
         if market_data is None:
             market_data = self._bootstrap_market_data()
+        self._ticker_event_map = self._extract_ticker_event_map(market_data)
+        if state_payload is None:
+            state_payload = {}
+        state_payload["ticker_event_map"] = dict(self._ticker_event_map)
         await self._strategy.initialize(market_data, state_payload)
 
         # Discord alerter (initialized early so startup validation can alert)
@@ -221,6 +226,7 @@ class TradingLoop:
                     "yes_bid": market.yes_bid,
                     "yes_ask": market.yes_ask,
                     "last_price": market.last_price,
+                    "event_ticker": market.event_ticker,
                 }
                 for market in markets
             ]
@@ -464,8 +470,11 @@ class TradingLoop:
                         "yes_bid": market.yes_bid,
                         "yes_ask": market.yes_ask,
                         "last_price": market.last_price,
+                        "event_ticker": market.event_ticker,
                     }
                 )
+                if market.event_ticker:
+                    self._ticker_event_map[ticker] = market.event_ticker
             except Exception:
                 logger.warning("market_data_refresh_failed", ticker=ticker, tick=self._tick_count)
 
@@ -507,7 +516,7 @@ class TradingLoop:
                     positions.append(
                         PositionInfo(
                             ticker=ticker,
-                            event_ticker=ticker.rsplit("-", 1)[0] if "-" in ticker else ticker,
+                            event_ticker=self._resolve_event_ticker(ticker),
                             quantity=contract.position,
                             avg_cost_cents=float(contract.last_price or contract.yes_ask),
                         )
@@ -526,7 +535,32 @@ class TradingLoop:
             positions=positions,
             daily_realized_pnl_cents=daily_realized,
             daily_unrealized_pnl_cents=daily_unrealized,
+            ticker_event_map=dict(self._ticker_event_map),
         )
+
+    def _extract_ticker_event_map(self, market_data: dict[str, Any]) -> dict[str, str]:
+        """Build a ticker → event_ticker map from market payloads."""
+        ticker_event_map: dict[str, str] = {}
+        for market in market_data.get("markets", []):
+            if not isinstance(market, dict):
+                continue
+            ticker = market.get("ticker")
+            event_ticker = market.get("event_ticker")
+            if isinstance(ticker, str) and ticker and isinstance(event_ticker, str) and event_ticker:
+                ticker_event_map[ticker] = event_ticker
+        return ticker_event_map
+
+    def _resolve_event_ticker(self, ticker: str) -> str:
+        """Resolve event ticker using in-memory map or strategy metadata."""
+        mapped = self._ticker_event_map.get(ticker)
+        if mapped:
+            return mapped
+        if self._strategy is not None:
+            resolved = self._strategy.resolve_event_ticker(ticker)
+            if resolved:
+                self._ticker_event_map[ticker] = resolved
+                return resolved
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def _current_balance_cents(self) -> int:
         """Best-effort account balance lookup.
