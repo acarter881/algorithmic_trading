@@ -87,6 +87,11 @@ docker compose up -d --build
 
 The Docker container runs in the background — you do not need to keep Docker Desktop open. Discord webhook notifications will alert you to trades and errors in real time.
 
+By default in Docker, state is persisted under `/data` in the container:
+
+- Paper/demo mode default DB URL: `sqlite:////data/autotrader_paper.db`
+- Live/production mode default DB URL: `sqlite:////data/autotrader_live.db` (when production mode is enabled)
+
 ### Switching from demo to production (exact procedure)
 
 > **Safety first:** production mode places real-money orders. Keep demo mode enabled until you have reviewed strategy behavior and risk limits.
@@ -117,6 +122,11 @@ The Docker container runs in the background — you do not need to keep Docker D
 
 If either log line still reports `demo` or the demo API host, stop immediately with `docker compose down` and fix `.env` before resuming.
 
+6. **After restart, confirm DB persistence target in startup logs:**
+   - Verify the configured database URL is the expected persistent path for your mode:
+     - Paper/demo in Docker: `sqlite:////data/autotrader_paper.db`
+     - Production in Docker: `sqlite:////data/autotrader_live.db`
+
 ### What the logs mean
 
 | Log message | Meaning |
@@ -128,7 +138,14 @@ If either log line still reports `demo` or the demo API host, stop immediately w
 
 ## Reviewing Trades
 
-All orders, fills, positions, and daily P&L are recorded to a local SQLite database (`autotrader.db`). This is created automatically on first run — no database setup is needed in `.env`.
+All orders, fills, positions, and daily P&L are recorded to SQLite. The default DB URL depends on how you run the service:
+
+- **Docker paper/demo mode:** `sqlite:////data/autotrader_paper.db`
+- **Docker production mode:** `sqlite:////data/autotrader_live.db` (when production is enabled)
+- **Local non-Docker CLI runs:** from YAML defaults (`config/base.yaml`, overlaid by `config/paper.yaml` or `config/live.yaml`):
+  - base: `sqlite:///autotrader.db`
+  - paper overlay: `sqlite:///autotrader_paper.db`
+  - live overlay: `sqlite:///autotrader_live.db`
 
 Your primary view of trade activity is the **Kalshi platform itself**:
 
@@ -140,6 +157,26 @@ The two relevant event pages on Kalshi:
 - **KXLLM1** — per-organization contracts on which AI org will lead
 
 If Discord alerts are configured, you will also receive real-time notifications for trades, signals, and errors.
+
+### Where is my DB?
+
+Use these commands to locate and inspect persisted data in Docker:
+
+```bash
+# List compose volumes (look for this project's data volume)
+docker volume ls
+
+# Inspect the resolved volume mount path for the autotrader service
+docker compose config
+
+# Open a shell in the running container and inspect /data
+docker compose exec autotrader sh -lc 'ls -lah /data && pwd'
+
+# Optional: inspect the SQLite DB directly
+docker compose exec autotrader sh -lc 'sqlite3 /data/autotrader_paper.db ".tables"'
+```
+
+If you run locally (non-Docker), the SQLite files are created relative to your current working directory unless you set an absolute URL.
 
 ## Quick Start (Local)
 
