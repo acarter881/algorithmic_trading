@@ -93,6 +93,7 @@ class PortfolioSnapshot:
     positions: list[PositionInfo] = field(default_factory=list)
     daily_realized_pnl_cents: dict[str, int] = field(default_factory=dict)  # strategy → cents
     daily_unrealized_pnl_cents: dict[str, int] = field(default_factory=dict)  # strategy → cents
+    ticker_event_map: dict[str, str] = field(default_factory=dict)  # contract ticker → event ticker
 
 
 # ── Risk Manager ─────────────────────────────────────────────────────────
@@ -346,6 +347,9 @@ class RiskManager:
         for p in self._portfolio.positions:
             if p.ticker == ticker:
                 return p.event_ticker
+        mapped_event = self._portfolio.ticker_event_map.get(ticker)
+        if mapped_event:
+            return mapped_event
         return ticker
 
     def _current_position_for_event(self, event_ticker: str) -> int:

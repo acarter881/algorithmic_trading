@@ -83,6 +83,8 @@ class LeaderboardAlphaStrategy(Strategy):
         self._contracts: dict[str, ContractView] = {}
         # Kalshi ticker → model name (from contract title/subtitle)
         self._ticker_model_names: dict[str, str] = {}
+        # Kalshi ticker → Kalshi event ticker
+        self._ticker_event_map: dict[str, str] = {}
         # Arena model name → pairwise aggregate metrics
         self._pairwise: dict[str, PairwiseAggregate] = {}
         # Arena organization → best leaderboard entry for that org
@@ -121,6 +123,9 @@ class LeaderboardAlphaStrategy(Strategy):
                 ticker = m.get("ticker", "")
                 model_name = m.get("subtitle", m.get("title", ""))
                 self._ticker_model_names[ticker] = model_name
+                raw_event_ticker = m.get("event_ticker")
+                event_ticker = raw_event_ticker if isinstance(raw_event_ticker, str) and raw_event_ticker else self._ticker_series(ticker)
+                self._ticker_event_map[ticker] = event_ticker
                 self._contracts[ticker] = ContractView(
                     ticker=ticker,
                     model_name=model_name,
@@ -144,6 +149,9 @@ class LeaderboardAlphaStrategy(Strategy):
             for org_name, ticker in state.get("org_ticker_map", {}).items():
                 if isinstance(org_name, str) and isinstance(ticker, str):
                     self._org_ticker_map[org_name] = ticker
+            for ticker, event_ticker in state.get("ticker_event_map", {}).items():
+                if isinstance(ticker, str) and isinstance(event_ticker, str) and event_ticker:
+                    self._ticker_event_map[ticker] = event_ticker
         self._rebuild_org_rankings()
 
         logger.info("strategy_initialized", strategy=self.name, contracts=len(self._contracts))
@@ -184,6 +192,9 @@ class LeaderboardAlphaStrategy(Strategy):
                 value = data.get(key)
                 if isinstance(value, int) and value > 0:
                     setattr(c, key, value)
+            event_ticker = data.get("event_ticker")
+            if isinstance(event_ticker, str) and event_ticker:
+                self._ticker_event_map[data["ticker"]] = event_ticker
         return []
 
     async def on_fill(self, fill_data: Any) -> None:
@@ -220,6 +231,7 @@ class LeaderboardAlphaStrategy(Strategy):
             "positions": {t: c.position for t, c in self._contracts.items() if c.position != 0},
             "model_ticker_map": dict(self._model_ticker_map),
             "org_ticker_map": dict(self._org_ticker_map),
+            "ticker_event_map": dict(self._ticker_event_map),
             "pairwise": {
                 m: {
                     "total_pairwise_battles": p.total_pairwise_battles,
@@ -730,6 +742,10 @@ class LeaderboardAlphaStrategy(Strategy):
     @property
     def model_ticker_map(self) -> dict[str, str]:
         return dict(self._model_ticker_map)
+
+    def resolve_event_ticker(self, ticker: str) -> str:
+        """Resolve the event ticker for a contract ticker."""
+        return self._ticker_event_map.get(ticker, self._ticker_series(ticker))
 
     def set_rankings(self, rankings: dict[str, LeaderboardEntry]) -> None:
         """Set the leaderboard rankings (for initialization / testing)."""

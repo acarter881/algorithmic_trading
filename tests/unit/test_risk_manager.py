@@ -66,12 +66,14 @@ def _portfolio(
     positions: list[PositionInfo] | None = None,
     daily_realized: dict[str, int] | None = None,
     daily_unrealized: dict[str, int] | None = None,
+    ticker_event_map: dict[str, str] | None = None,
 ) -> PortfolioSnapshot:
     return PortfolioSnapshot(
         balance_cents=balance_cents,
         positions=positions or [],
         daily_realized_pnl_cents=daily_realized or {},
         daily_unrealized_pnl_cents=daily_unrealized or {},
+        ticker_event_map=ticker_event_map or {},
     )
 
 
@@ -234,17 +236,37 @@ class TestPositionPerContract:
 
 
 class TestPositionPerEvent:
-    def test_within_event_limit_approved(self) -> None:
+    def test_multi_contract_same_event_uses_ticker_event_map(self) -> None:
         positions = [
-            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=100),
-            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=100),
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=120),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=110),
         ]
-        rm = _manager(portfolio=_portfolio(positions=positions))
-        # New order for a different contract in the same event
-        order = _order(ticker="KXTOPMODEL-CLAUDE5", quantity=40)
-        # Ticker not in positions → event_ticker defaults to ticker itself
-        # So this order's event is "KXTOPMODEL-CLAUDE5", not "KXTOPMODEL-EV1"
-        decision = rm.evaluate(order)
+        rm = _manager(
+            portfolio=_portfolio(
+                positions=positions,
+                ticker_event_map={"KXTOPMODEL-CLAUDE5": "KXTOPMODEL-EV1"},
+            )
+        )
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", quantity=25))
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-EV1" in reason for reason in decision.rejection_reasons)
+
+    def test_same_series_different_event_approved(self) -> None:
+        positions = [
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=140),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=90),
+        ]
+        rm = _manager(
+            portfolio=_portfolio(
+                positions=positions,
+                ticker_event_map={"KXTOPMODEL-CLAUDE5": "KXTOPMODEL-EV2"},
+            )
+        )
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", quantity=25))
+
         assert decision.approved
 
     def test_exceeds_event_limit_rejected(self) -> None:

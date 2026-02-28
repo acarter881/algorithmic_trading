@@ -606,6 +606,123 @@ class TestPortfolioSnapshot:
         assert snap.positions[0].quantity == -95
         await loop.shutdown()
 
+    async def test_snapshot_event_map_rejects_multi_contract_same_event(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-GEMINI3",
+                    "title": "Top model",
+                    "subtitle": "Gemini 3",
+                    "yes_bid": 40,
+                    "yes_ask": 42,
+                    "last_price": 41,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-CLAUDE5",
+                    "title": "Top model",
+                    "subtitle": "Claude 5",
+                    "yes_bid": 39,
+                    "yes_ask": 41,
+                    "last_price": 40,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+            ]
+        }
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 130
+        loop.strategy.contracts["KXTOPMODEL-GEMINI3"].position = 110
+
+        snapshot = loop.build_portfolio_snapshot()
+
+        assert snapshot.ticker_event_map["KXTOPMODEL-CLAUDE5"] == "KXTOPMODEL-EV1"
+        assert loop.risk_manager is not None
+        loop.risk_manager.update_portfolio(snapshot)
+        decision = loop.risk_manager.evaluate(
+            ProposedOrder(
+                strategy="leaderboard_alpha",
+                ticker="KXTOPMODEL-CLAUDE5",
+                side="yes",
+                price_cents=40,
+                quantity=20,
+                urgency=OrderUrgency.PASSIVE,
+            )
+        )
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-EV1" in reason for reason in decision.rejection_reasons)
+        await loop.shutdown()
+
+    async def test_snapshot_event_map_allows_same_series_different_event(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-GEMINI3",
+                    "title": "Top model",
+                    "subtitle": "Gemini 3",
+                    "yes_bid": 40,
+                    "yes_ask": 42,
+                    "last_price": 41,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-CLAUDE5",
+                    "title": "Top model",
+                    "subtitle": "Claude 5",
+                    "yes_bid": 39,
+                    "yes_ask": 41,
+                    "last_price": 40,
+                    "event_ticker": "KXTOPMODEL-EV2",
+                },
+            ]
+        }
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 140
+        loop.strategy.contracts["KXTOPMODEL-GEMINI3"].position = 90
+
+        snapshot = loop.build_portfolio_snapshot()
+
+        assert snapshot.ticker_event_map["KXTOPMODEL-CLAUDE5"] == "KXTOPMODEL-EV2"
+        assert loop.risk_manager is not None
+        loop.risk_manager.update_portfolio(snapshot)
+        decision = loop.risk_manager.evaluate(
+            ProposedOrder(
+                strategy="leaderboard_alpha",
+                ticker="KXTOPMODEL-CLAUDE5",
+                side="yes",
+                price_cents=40,
+                quantity=20,
+                urgency=OrderUrgency.PASSIVE,
+            )
+        )
+
+        assert decision.approved
+        await loop.shutdown()
+
     async def test_build_snapshot_includes_persisted_daily_pnl(self) -> None:
         sf = _session_factory()
         loop = TradingLoop(_config())
