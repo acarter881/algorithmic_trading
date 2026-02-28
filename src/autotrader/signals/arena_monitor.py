@@ -270,6 +270,8 @@ class ArenaMonitor(SignalSource):
 
         # Leader change — highest urgency
         if diff.leader_changed:
+            resolved = resolve_top_model(current.entries)
+            new_top_org = resolved.organization if resolved is not None else ""
             signals.append(
                 Signal(
                     source=self.name,
@@ -279,9 +281,7 @@ class ArenaMonitor(SignalSource):
                         "new_leader": diff.new_leader,
                         "previous_leader": diff.previous_leader,
                         "source_url": current.source_url,
-                        "new_top_org": resolve_top_model(current.entries).organization
-                        if resolve_top_model(current.entries)
-                        else "",
+                        "new_top_org": new_top_org,
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.HIGH,
@@ -403,7 +403,7 @@ class ArenaMonitor(SignalSource):
 
     # ── Snapshot Serialization ────────────────────────────────────────
 
-    def snapshot_to_dict(self, snapshot: LeaderboardSnapshot) -> dict[str, list[dict[str, object]]]:
+    def snapshot_to_dict(self, snapshot: LeaderboardSnapshot) -> dict[str, object]:
         """Serialize a snapshot for database storage (LeaderboardSnapshot.snapshot_data)."""
         return {
             "entries": [
