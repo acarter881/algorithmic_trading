@@ -168,8 +168,7 @@ class TradingLoop:
         self._persist_system_event("no_tradable_markets_loaded", details, severity="critical")
 
         message = (
-            "Expected at least one open market per configured series. "
-            f"Missing series: {', '.join(missing_series)}"
+            f"Expected at least one open market per configured series. Missing series: {', '.join(missing_series)}"
         )
         if not is_paper_mode:
             raise RuntimeError(f"no_tradable_markets_loaded: {message}")
