@@ -25,7 +25,7 @@ from typing import Any
 import structlog
 from bs4 import BeautifulSoup, Tag
 
-from autotrader.signals.arena_types import LeaderboardEntry
+from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("autotrader.signals.arena_parser")
 
@@ -42,6 +42,7 @@ _CI_UPPER_KEYS = ("ci_upper", "upper_ci", "ci_high", "rating_q975")
 _VOTES_KEYS = ("votes", "num_battles", "total_votes", "num_votes")
 _ORG_KEYS = ("organization", "org", "provider", "developer")
 _NAME_KEYS = ("model_name", "model", "name", "full_name", "key")
+_RELEASE_KEYS = ("release_date", "released_at", "release_time", "launch_date")
 
 
 def _get_first(data: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any:
@@ -81,6 +82,7 @@ def parse_json_entries(data: list[dict[str, Any]]) -> list[LeaderboardEntry]:
                 ci_upper=_safe_float(_get_first(row, _CI_UPPER_KEYS, 0.0)),
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD,
+                release_date=str(_get_first(row, _RELEASE_KEYS, "")),
             )
         )
 
@@ -106,6 +108,22 @@ def extract_next_data(html: str) -> list[dict[str, Any]] | None:
 
     # Walk common paths where leaderboard data may live
     return _find_leaderboard_array(payload)
+
+
+def extract_next_payload(html: str) -> dict[str, Any] | None:
+    """Extract the raw Next.js ``__NEXT_DATA__`` payload from page HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    script_tag = soup.find("script", id="__NEXT_DATA__")
+    if not isinstance(script_tag, Tag) or not script_tag.string:
+        return None
+
+    try:
+        payload = json.loads(script_tag.string)
+    except json.JSONDecodeError:
+        logger.warning("next_data_invalid_json")
+        return None
+
+    return payload if isinstance(payload, dict) else None
 
 
 def _find_leaderboard_array(obj: Any, depth: int = 0) -> list[dict[str, Any]] | None:
@@ -213,6 +231,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
+                release_date="",
             )
         )
 
@@ -304,6 +323,7 @@ def parse_csv(content: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
+                release_date="",
             )
         )
 
@@ -350,6 +370,80 @@ def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
     return parse_html_table(html_or_json)
 
 
+def extract_pairwise_aggregates(payload: Any) -> dict[str, PairwiseAggregate]:
+    """Extract pairwise-derived aggregates from Arena payloads.
+
+    The Arena site can publish chart data in varying shapes. This helper uses
+    conservative heuristics and returns an empty map when no compatible data is
+    found.
+    """
+    if isinstance(payload, str):
+        with_payload: Any = None
+        try:
+            with_payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            with_payload = extract_next_payload(payload)
+        payload = with_payload if with_payload is not None else payload
+
+    data = _find_pairwise_data(payload)
+    if not data:
+        return {}
+
+    labels = [str(x) for x in data.get("labels", []) if str(x)]
+    battle = data.get("battle_matrix", [])
+    win = data.get("win_matrix", [])
+    if not labels or len(battle) != len(labels) or len(win) != len(labels):
+        return {}
+
+    aggregates: dict[str, PairwiseAggregate] = {}
+    for i, model in enumerate(labels):
+        battle_row = battle[i] if isinstance(battle[i], list) else []
+        win_row = win[i] if isinstance(win[i], list) else []
+        total_battles = 0
+        win_weighted_sum = 0.0
+
+        for j, battles in enumerate(battle_row):
+            if i == j:
+                continue
+            battle_count = _safe_int(battles)
+            win_rate = _safe_float(win_row[j] if j < len(win_row) else 0.0)
+            if battle_count <= 0:
+                continue
+            total_battles += battle_count
+            win_weighted_sum += win_rate * battle_count
+
+        avg = (win_weighted_sum / total_battles) if total_battles > 0 else 0.0
+        aggregates[model] = PairwiseAggregate(
+            model_name=model,
+            total_pairwise_battles=total_battles,
+            average_pairwise_win_rate=avg,
+        )
+
+    return aggregates
+
+
+def _find_pairwise_data(obj: Any, depth: int = 0) -> dict[str, Any] | None:
+    """Find chart payload containing model labels + battle/win matrices."""
+    if depth > 10:
+        return None
+    if isinstance(obj, dict):
+        labels = obj.get("labels")
+        battle = obj.get("battle_matrix") or obj.get("battleCountMatrix")
+        win = obj.get("win_matrix") or obj.get("winFractionMatrix")
+        if isinstance(labels, list) and isinstance(battle, list) and isinstance(win, list):
+            return {"labels": labels, "battle_matrix": battle, "win_matrix": win}
+        for value in obj.values():
+            found = _find_pairwise_data(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_pairwise_data(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
 def _looks_like_csv(content: str) -> bool:
     """Heuristic: does the content look like CSV data?"""
     if not content or content.lstrip().startswith(("{", "[", "<", "!")):
@@ -371,8 +465,8 @@ def _extract_headers(table: Tag) -> list[str]:
 
     # Fallback: first row of the table
     first_row = table.find("tr")
-    if first_row:
-        return [_clean_cell(th).lower() for th in first_row.find_all(["th", "td"])]  # type: ignore[union-attr]
+    if isinstance(first_row, Tag):
+        return [_clean_cell(th).lower() for th in first_row.find_all(["th", "td"])]
     return []
 
 
