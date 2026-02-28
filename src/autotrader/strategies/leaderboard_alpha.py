@@ -124,7 +124,11 @@ class LeaderboardAlphaStrategy(Strategy):
                 model_name = m.get("subtitle", m.get("title", ""))
                 self._ticker_model_names[ticker] = model_name
                 raw_event_ticker = m.get("event_ticker")
-                event_ticker = raw_event_ticker if isinstance(raw_event_ticker, str) and raw_event_ticker else self._ticker_series(ticker)
+                event_ticker = (
+                    raw_event_ticker
+                    if isinstance(raw_event_ticker, str) and raw_event_ticker
+                    else self._ticker_series(ticker)
+                )
                 self._ticker_event_map[ticker] = event_ticker
                 self._contracts[ticker] = ContractView(
                     ticker=ticker,
