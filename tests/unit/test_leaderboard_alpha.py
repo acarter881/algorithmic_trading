@@ -391,6 +391,30 @@ class TestRankingChange:
         orders = await s.on_signal(signal)
         assert orders == []
 
+    async def test_equal_edge_does_not_generate_sell(self) -> None:
+        s = _strategy()
+        data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 20, "yes_ask": 22, "last_price": 21},
+            ]
+        }
+        await s.initialize(data, {"positions": {"KXTOPMODEL-GPT5": 5}})
+        s.set_rankings({"GPT-5": _entry(rank_ub=2)})
+
+        signal = _signal(
+            "ranking_change",
+            {
+                "model_name": "GPT-5",
+                "old_rank_ub": 2,
+                "new_rank_ub": 2,
+                "old_rank": 2,
+                "new_rank": 2,
+            },
+        )
+
+        orders = await s.on_signal(signal)
+        assert orders == []
+
     async def test_unmatched_model_no_order(self) -> None:
         s = _strategy()
         await s.initialize(MARKET_DATA, None)
@@ -589,6 +613,29 @@ class TestNewLeader:
         orders = await s.on_signal(signal)
         buy_orders = [o for o in orders if o.side == "yes"]
         assert len(buy_orders) == 0
+
+    async def test_uses_new_top_org_payload_for_kxllm1(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(org_market_data, {"positions": {"KXLLM1-OPENAI": 2}})
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        signal = _signal(
+            "new_leader",
+            {
+                "new_leader": "Gemini 3",
+                "previous_leader": "GPT-5",
+                "new_top_org": "Google",
+            },
+        )
+
+        orders = await s.on_signal(signal)
+        assert any(o.ticker == "KXLLM1-GOOGLE" and o.side == "yes" for o in orders)
+        assert any(o.ticker == "KXLLM1-OPENAI" and o.side == "no" for o in orders)
 
     async def test_tracks_new_leader_in_rankings(self) -> None:
         s = _strategy()

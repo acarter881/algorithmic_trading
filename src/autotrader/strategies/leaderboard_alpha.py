@@ -323,7 +323,7 @@ class LeaderboardAlphaStrategy(Strategy):
                         f"rank_ub {old_rank_ub}->{new_rank_ub}, fv={fair_value}c mkt={market_price}c",
                     )
                 )
-            elif contract.position > 0:
+            elif edge < 0 and contract.position > 0:
                 sell_price = contract.yes_bid or contract.last_price
                 if 0 < sell_price < 100:
                     sell_qty = min(contract.position, int(self._config.max_position_per_contract))
@@ -392,7 +392,9 @@ class LeaderboardAlphaStrategy(Strategy):
                     )
         # Also trade organization leader on KXLLM1 contracts.
         new_org = (
-            data.get("new_organization") or self._rankings.get(new_leader, LeaderboardEntry(model_name="")).organization
+            data.get("new_organization")
+            or data.get("new_top_org")
+            or self._rankings.get(new_leader, LeaderboardEntry(model_name="")).organization
         )
         prev_org = (
             data.get("previous_organization")
