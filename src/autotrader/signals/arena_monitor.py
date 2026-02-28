@@ -19,14 +19,16 @@ import httpx
 import structlog
 
 from autotrader.config.models import ArenaMonitorConfig
-from autotrader.signals.arena_parser import parse_leaderboard
+from autotrader.signals.arena_parser import extract_pairwise_aggregates, parse_leaderboard
 from autotrader.signals.arena_types import (
     LeaderboardDiff,
     LeaderboardSnapshot,
     RankChange,
+    PairwiseChange,
     ScoreChange,
 )
 from autotrader.signals.base import Signal, SignalSource, SignalUrgency
+from autotrader.signals.settlement import resolve_top_model
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("autotrader.signals.arena_monitor")
 
@@ -138,8 +140,11 @@ class ArenaMonitor(SignalSource):
                 logger.warning("arena_no_entries_parsed", url=url)
                 return None
 
+            pairwise = extract_pairwise_aggregates(content)
+
             snapshot = LeaderboardSnapshot(
                 entries=entries,
+                pairwise=pairwise,
                 source_url=url,
                 captured_at=datetime.datetime.utcnow(),
             )
@@ -181,6 +186,7 @@ class ArenaMonitor(SignalSource):
         # Rank and score changes for models present in both
         rank_changes: list[RankChange] = []
         score_changes: list[ScoreChange] = []
+        pairwise_changes: list[PairwiseChange] = []
 
         for model_name in sorted(prev_names & curr_names):
             prev_entry = prev_by_name[model_name]
@@ -212,14 +218,32 @@ class ArenaMonitor(SignalSource):
                     )
                 )
 
+            prev_pair = previous.pairwise.get(model_name)
+            curr_pair = current.pairwise.get(model_name)
+            if prev_pair and curr_pair:
+                win_delta = curr_pair.average_pairwise_win_rate - prev_pair.average_pairwise_win_rate
+                if abs(win_delta) >= 0.01 or curr_pair.total_pairwise_battles != prev_pair.total_pairwise_battles:
+                    pairwise_changes.append(
+                        PairwiseChange(
+                            model_name=model_name,
+                            old_average_pairwise_win_rate=prev_pair.average_pairwise_win_rate,
+                            new_average_pairwise_win_rate=curr_pair.average_pairwise_win_rate,
+                            old_total_pairwise_battles=prev_pair.total_pairwise_battles,
+                            new_total_pairwise_battles=curr_pair.total_pairwise_battles,
+                        )
+                    )
+
         # Leader change
-        prev_leader = previous.top_model or ""
-        curr_leader = current.top_model or ""
+        prev_winner = resolve_top_model(previous.entries)
+        curr_winner = resolve_top_model(current.entries)
+        prev_leader = prev_winner.model_name if prev_winner else ""
+        curr_leader = curr_winner.model_name if curr_winner else ""
         leader_changed = prev_leader != curr_leader and prev_leader != "" and curr_leader != ""
 
         return LeaderboardDiff(
             rank_changes=rank_changes,
             score_changes=score_changes,
+            pairwise_changes=pairwise_changes,
             new_entries=new_entries,
             removed_entries=removed_entries,
             leader_changed=leader_changed,
@@ -255,6 +279,7 @@ class ArenaMonitor(SignalSource):
                         "new_leader": diff.new_leader,
                         "previous_leader": diff.previous_leader,
                         "source_url": current.source_url,
+                        "new_top_org": resolve_top_model(current.entries).organization if resolve_top_model(current.entries) else "",
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.HIGH,
@@ -295,6 +320,25 @@ class ArenaMonitor(SignalSource):
                         "old_score": sc.old_score,
                         "new_score": sc.new_score,
                         "score_delta": sc.score_delta,
+                    },
+                    relevant_series=TARGET_SERIES,
+                    urgency=SignalUrgency.MEDIUM,
+                )
+            )
+
+        # Pairwise shifts
+        for pc in diff.pairwise_changes:
+            signals.append(
+                Signal(
+                    source=self.name,
+                    timestamp=now,
+                    event_type="pairwise_shift",
+                    data={
+                        "model_name": pc.model_name,
+                        "old_average_pairwise_win_rate": pc.old_average_pairwise_win_rate,
+                        "new_average_pairwise_win_rate": pc.new_average_pairwise_win_rate,
+                        "old_total_pairwise_battles": pc.old_total_pairwise_battles,
+                        "new_total_pairwise_battles": pc.new_total_pairwise_battles,
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.MEDIUM,
@@ -368,7 +412,14 @@ class ArenaMonitor(SignalSource):
                     "is_preliminary": e.is_preliminary,
                 }
                 for e in snapshot.entries
-            ]
+            ],
+            "pairwise": {
+                name: {
+                    "total_pairwise_battles": p.total_pairwise_battles,
+                    "average_pairwise_win_rate": p.average_pairwise_win_rate,
+                }
+                for name, p in snapshot.pairwise.items()
+            },
         }
 
     @property

@@ -1167,3 +1167,28 @@ class TestEdgeCases:
         signal = _signal("model_removed", {"model_name": "GPT-5", "last_rank_ub": 3})
         orders = await s.on_signal(signal)
         assert orders == []
+
+
+class TestPairwiseShift:
+    async def test_pairwise_shift_can_generate_buy(self) -> None:
+        s = _strategy()
+        await s.initialize(
+            {
+                "markets": [
+                    {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 40, "yes_ask": 42, "last_price": 41},
+                ]
+            },
+            None,
+        )
+        s.set_rankings({"GPT-5": _entry(rank_ub=1, rank=1, score=1500)})
+        signal = _signal(
+            "pairwise_shift",
+            {
+                "model_name": "GPT-5",
+                "new_average_pairwise_win_rate": 0.58,
+                "new_total_pairwise_battles": 5000,
+            },
+        )
+        orders = await s.on_signal(signal)
+        assert len(orders) == 1
+        assert orders[0].side == "yes"

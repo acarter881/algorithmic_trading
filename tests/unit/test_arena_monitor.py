@@ -427,4 +427,24 @@ class TestSnapshotSerialization:
         monitor = ArenaMonitor()
         snap = _snapshot([])
         data = monitor.snapshot_to_dict(snap)
-        assert data == {"entries": []}
+        assert data == {"entries": [], "pairwise": {}}
+
+
+class TestPairwiseSignals:
+    def test_generates_pairwise_shift_signal(self) -> None:
+        from autotrader.signals.arena_types import LeaderboardSnapshot, LeaderboardEntry, PairwiseAggregate
+
+        monitor = ArenaMonitor()
+        previous = LeaderboardSnapshot(
+            entries=[LeaderboardEntry(model_name="A", rank=1, rank_ub=1, score=1500, votes=1000)],
+            pairwise={"A": PairwiseAggregate(model_name="A", total_pairwise_battles=1000, average_pairwise_win_rate=0.51)},
+            source_url="x",
+        )
+        current = LeaderboardSnapshot(
+            entries=[LeaderboardEntry(model_name="A", rank=1, rank_ub=1, score=1501, votes=1100)],
+            pairwise={"A": PairwiseAggregate(model_name="A", total_pairwise_battles=1300, average_pairwise_win_rate=0.54)},
+            source_url="x",
+        )
+        monitor.previous_snapshot = previous
+        signals = monitor._generate_signals(current)
+        assert any(s.event_type == "pairwise_shift" for s in signals)

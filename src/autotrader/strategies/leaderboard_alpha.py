@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from autotrader.signals.arena_types import LeaderboardEntry
+from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 from autotrader.strategies.base import OrderUrgency, ProposedOrder, Strategy
 from autotrader.utils.fees import FeeCalculator
 from autotrader.utils.matching import fuzzy_match
+from autotrader.signals.settlement import resolve_top_model
 
 if TYPE_CHECKING:
     from autotrader.config.models import LeaderboardAlphaConfig
@@ -81,6 +82,8 @@ class LeaderboardAlphaStrategy(Strategy):
         self._contracts: dict[str, ContractView] = {}
         # Kalshi ticker → model name (from contract title/subtitle)
         self._ticker_model_names: dict[str, str] = {}
+        # Arena model name → pairwise aggregate metrics
+        self._pairwise: dict[str, PairwiseAggregate] = {}
 
     # ── Strategy interface ────────────────────────────────────────────
 
@@ -125,6 +128,13 @@ class LeaderboardAlphaStrategy(Strategy):
             for ticker, pos in state.get("positions", {}).items():
                 if ticker in self._contracts:
                     self._contracts[ticker].position = pos
+            for model_name, pair in state.get("pairwise", {}).items():
+                if isinstance(pair, dict):
+                    self._pairwise[model_name] = PairwiseAggregate(
+                        model_name=model_name,
+                        total_pairwise_battles=int(pair.get("total_pairwise_battles", 0)),
+                        average_pairwise_win_rate=float(pair.get("average_pairwise_win_rate", 0.0)),
+                    )
 
         logger.info("strategy_initialized", strategy=self.name, contracts=len(self._contracts))
 
@@ -138,6 +148,7 @@ class LeaderboardAlphaStrategy(Strategy):
             "new_leader": self._handle_new_leader,
             "score_shift": self._handle_score_shift,
             "new_model": self._handle_new_model,
+            "pairwise_shift": self._handle_pairwise_shift,
         }.get(signal.event_type)
 
         if handler is None:
@@ -197,6 +208,13 @@ class LeaderboardAlphaStrategy(Strategy):
             },
             "positions": {t: c.position for t, c in self._contracts.items() if c.position != 0},
             "model_ticker_map": dict(self._model_ticker_map),
+            "pairwise": {
+                m: {
+                    "total_pairwise_battles": p.total_pairwise_battles,
+                    "average_pairwise_win_rate": p.average_pairwise_win_rate,
+                }
+                for m, p in self._pairwise.items()
+            },
         }
 
     async def teardown(self) -> None:
@@ -213,6 +231,13 @@ class LeaderboardAlphaStrategy(Strategy):
         if entry is None:
             return None
         prob = rank_to_probability(entry.rank_ub)
+        winner = resolve_top_model(list(self._rankings.values()))
+        if winner and winner.model_name == model_name:
+            prob = min(0.95, prob + 0.05)
+        pairwise = self._pairwise.get(model_name)
+        if pairwise and pairwise.total_pairwise_battles > 0:
+            pairwise_edge = pairwise.average_pairwise_win_rate - 0.5
+            prob = max(0.0, min(1.0, prob + 0.15 * pairwise_edge))
         if entry.is_preliminary:
             prob *= 1.0 - self._config.preliminary_model_discount
         return max(1, min(99, round(prob * 100)))
@@ -403,6 +428,38 @@ class LeaderboardAlphaStrategy(Strategy):
             market_price,
             urgency,
             f"new model {model_name} rank_ub={rank_ub}, fv={fair_value}c mkt={market_price}c",
+        )
+
+    def _handle_pairwise_shift(self, signal: Signal) -> list[ProposedOrder]:
+        data = signal.data
+        model_name = data.get("model_name", "")
+        new_avg = float(data.get("new_average_pairwise_win_rate", 0.0))
+        new_battles = int(data.get("new_total_pairwise_battles", 0))
+        self._pairwise[model_name] = PairwiseAggregate(
+            model_name=model_name,
+            total_pairwise_battles=new_battles,
+            average_pairwise_win_rate=new_avg,
+        )
+        if new_battles < 2000 or new_avg <= 0.52:
+            return []
+
+        ticker = self._resolve_ticker(model_name)
+        if ticker is None:
+            return []
+        fair_value = self.estimate_fair_value(model_name)
+        contract = self._contracts.get(ticker)
+        if fair_value is None or contract is None:
+            return []
+        market_price = contract.yes_ask or contract.last_price
+        if market_price <= 0 or market_price >= 100:
+            return []
+        return self._propose_buy(
+            ticker,
+            contract,
+            fair_value,
+            market_price,
+            OrderUrgency.ADAPTIVE,
+            f"pairwise win={new_avg:.3f} battles={new_battles}, fv={fair_value}c mkt={market_price}c",
         )
 
     # ── Helpers ───────────────────────────────────────────────────────
