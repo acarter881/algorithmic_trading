@@ -100,7 +100,20 @@ class TestTradingLoopInit:
         config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
 
         loop = TradingLoop(config)
-        await loop.initialize()
+        await loop.initialize(
+            market_data={
+                "markets": [
+                    {
+                        "ticker": "KXTOPMODEL-GPT5",
+                        "title": "Top model",
+                        "subtitle": "GPT-5",
+                        "yes_bid": 44,
+                        "yes_ask": 46,
+                        "last_price": 45,
+                    }
+                ]
+            }
+        )
 
         assert mock_client.connect.call_count >= 1
         mock_client.connect.assert_any_call(private_key_pem=ANY)
