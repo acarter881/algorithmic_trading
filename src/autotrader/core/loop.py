@@ -96,6 +96,12 @@ class TradingLoop:
             market_data = self._bootstrap_market_data()
         await self._strategy.initialize(market_data, state_payload)
 
+        # Discord alerter (initialized early so startup validation can alert)
+        self._alerter = DiscordAlerter(self._config.discord)
+        await self._alerter.initialize()
+
+        await self._validate_startup_markets(is_paper_mode=is_paper_mode)
+
         # Market data refresh client (runtime quote updates for tracked tickers)
         self._market_data_client = KalshiAPIClient(self._config.kalshi)
         try:
@@ -121,10 +127,6 @@ class TradingLoop:
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)
 
-        # Discord alerter
-        self._alerter = DiscordAlerter(self._config.discord)
-        await self._alerter.initialize()
-
         logger.info(
             "trading_loop_initialized",
             mode=mode.value,
@@ -137,6 +139,45 @@ class TradingLoop:
         # Record startup event
         self._persist_system_event("startup", {"mode": mode.value}, "info")
         await self._send_system_alert("Autotrader Started", f"Mode: {mode.value}")
+
+    async def _validate_startup_markets(self, *, is_paper_mode: bool) -> None:
+        """Validate that configured target series have at least one tradable contract."""
+        if self._strategy is None:
+            return
+
+        expected_series = list(self._config.leaderboard_alpha.target_series)
+        loaded_contracts = self._strategy.contracts
+
+        series_market_counts = {
+            series: sum(1 for ticker in loaded_contracts if ticker.startswith(f"{series}-"))
+            for series in expected_series
+        }
+        missing_series = [series for series, count in series_market_counts.items() if count < 1]
+        if not missing_series:
+            return
+
+        mode = "paper" if is_paper_mode else "production"
+        details = {
+            "mode": mode,
+            "expected_series": expected_series,
+            "series_market_counts": series_market_counts,
+            "loaded_contracts": len(loaded_contracts),
+            "missing_series": missing_series,
+        }
+        logger.error("no_tradable_markets_loaded", **details)
+        self._persist_system_event("no_tradable_markets_loaded", details, severity="critical")
+
+        message = (
+            "Expected at least one open market per configured series. "
+            f"Missing series: {', '.join(missing_series)}"
+        )
+        if not is_paper_mode:
+            raise RuntimeError(f"no_tradable_markets_loaded: {message}")
+
+        # Paper mode degrades gracefully but emits repeated high-severity alerts.
+        for _ in range(3):
+            await self._send_error_alert("no_tradable_markets_loaded", message)
+            await self._send_system_alert("CRITICAL: no_tradable_markets_loaded", message)
 
     def _bootstrap_market_data(self) -> dict[str, Any]:
         """Discover active markets for configured target series at startup."""
