@@ -47,8 +47,7 @@ class ArenaMonitorFailureThresholdError(RuntimeError):
         self.max_consecutive_failures = max_consecutive_failures
         self.urls_attempted = urls_attempted
         super().__init__(
-            "Arena monitor fetch failures exceeded threshold "
-            f"({consecutive_failures}/{max_consecutive_failures})"
+            f"Arena monitor fetch failures exceeded threshold ({consecutive_failures}/{max_consecutive_failures})"
         )
 
 
