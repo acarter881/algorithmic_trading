@@ -16,6 +16,7 @@ from autotrader.config.models import (
     Environment,
     KalshiConfig,
     LeaderboardAlphaConfig,
+    RiskStrategyConfig,
 )
 from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
@@ -158,7 +159,10 @@ class TestTradingLoopInit:
             ]
         }
 
-        loop = TradingLoop(_config())
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(max_position_per_contract=100)
+
+        loop = TradingLoop(config)
         await loop.initialize(market_data=market_data, session_factory=sf)
 
         assert loop.strategy is not None

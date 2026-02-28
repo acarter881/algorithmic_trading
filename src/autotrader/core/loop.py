@@ -81,13 +81,14 @@ class TradingLoop:
             config=self._config.leaderboard_alpha,
             fee_calculator=self._fee_calc,
         )
+        is_paper_mode = self._config.kalshi.environment.value != "production"
 
         # Database repository (optional — gracefully degrades if not provided)
         state_payload: dict[str, Any] | None = None
         if session_factory is not None:
             self._repo = TradingRepository(session_factory)
             state_payload = {
-                "positions": self._repo.get_net_positions_by_ticker(self._strategy.name),
+                "positions": self._repo.get_net_positions_by_ticker(self._strategy.name, is_paper=is_paper_mode),
             }
 
         if market_data is None:
@@ -98,7 +99,7 @@ class TradingLoop:
         self._risk = RiskManager(config=self._config.risk)
 
         # Execution engine
-        mode = ExecutionMode.LIVE if self._config.kalshi.environment.value == "production" else ExecutionMode.PAPER
+        mode = ExecutionMode.PAPER if is_paper_mode else ExecutionMode.LIVE
         if mode == ExecutionMode.LIVE:
             client = KalshiAPIClient(self._config.kalshi)
             private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
