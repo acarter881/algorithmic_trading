@@ -269,6 +269,26 @@ class TestPositionPerEvent:
 
         assert decision.approved
 
+    def test_missing_event_metadata_falls_back_to_contract_event_prefix(self) -> None:
+        positions = [
+            PositionInfo(
+                ticker="KXTOPMODEL-26FEB28-GPT5",
+                event_ticker="KXTOPMODEL-26FEB28",
+                quantity=130,
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-26FEB28-GEMINI3",
+                event_ticker="KXTOPMODEL-26FEB28",
+                quantity=110,
+            ),
+        ]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-26FEB28-CLAUDE5", quantity=20))
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-26FEB28" in reason for reason in decision.rejection_reasons)
+
     def test_exceeds_event_limit_rejected(self) -> None:
         positions = [
             PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=150),
