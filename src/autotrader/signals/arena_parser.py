@@ -25,8 +25,7 @@ from typing import Any
 import structlog
 from bs4 import BeautifulSoup, Tag
 
-from autotrader.signals.arena_types import LeaderboardEntry
-from autotrader.signals.arena_types import PairwiseAggregate
+from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("autotrader.signals.arena_parser")
 

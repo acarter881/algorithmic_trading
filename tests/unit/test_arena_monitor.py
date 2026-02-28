@@ -15,6 +15,7 @@ from autotrader.signals.arena_monitor import ArenaMonitor
 from autotrader.signals.arena_types import (
     LeaderboardEntry,
     LeaderboardSnapshot,
+    PairwiseAggregate,
 )
 from autotrader.signals.base import SignalUrgency
 
@@ -432,8 +433,6 @@ class TestSnapshotSerialization:
 
 class TestPairwiseSignals:
     def test_generates_pairwise_shift_signal(self) -> None:
-        from autotrader.signals.arena_types import LeaderboardSnapshot, LeaderboardEntry, PairwiseAggregate
-
         monitor = ArenaMonitor()
         previous = LeaderboardSnapshot(
             entries=[LeaderboardEntry(model_name="A", rank=1, rank_ub=1, score=1500, votes=1000)],

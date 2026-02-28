@@ -23,8 +23,8 @@ from autotrader.signals.arena_parser import extract_pairwise_aggregates, parse_l
 from autotrader.signals.arena_types import (
     LeaderboardDiff,
     LeaderboardSnapshot,
-    RankChange,
     PairwiseChange,
+    RankChange,
     ScoreChange,
 )
 from autotrader.signals.base import Signal, SignalSource, SignalUrgency

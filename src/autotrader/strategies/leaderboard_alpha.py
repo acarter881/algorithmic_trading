@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
+from autotrader.signals.settlement import resolve_top_model
 from autotrader.strategies.base import OrderUrgency, ProposedOrder, Strategy
 from autotrader.utils.fees import FeeCalculator
 from autotrader.utils.matching import fuzzy_match
-from autotrader.signals.settlement import resolve_top_model
 
 if TYPE_CHECKING:
     from autotrader.config.models import LeaderboardAlphaConfig
