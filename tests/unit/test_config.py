@@ -101,6 +101,47 @@ class TestLoadConfig:
         config = load_config(config_dir=tmp_path, environment="demo")
         assert config.logging.level == "DEBUG"
 
+    def test_live_overlay(self, tmp_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text(
+            yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "DEBUG"}})
+        )
+        live = tmp_path / "live.yaml"
+        live.write_text(
+            yaml.dump(
+                {"kalshi": {"environment": "production"}, "logging": {"level": "INFO"}}
+            )
+        )
+
+        config = load_config(config_dir=tmp_path, environment="production")
+        assert config.kalshi.environment == Environment.PRODUCTION
+        assert config.logging.level == "INFO"
+
+    def test_environment_variable_overrides_live_overlay(self, tmp_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text(
+            yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "INFO"}})
+        )
+        live = tmp_path / "live.yaml"
+        live.write_text(
+            yaml.dump(
+                {"kalshi": {"environment": "production"}, "logging": {"level": "WARNING"}}
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTOTRADER__KALSHI__ENVIRONMENT": "demo",
+                "AUTOTRADER__LOGGING__LEVEL": "DEBUG",
+            },
+            clear=False,
+        ):
+            config = load_config(config_dir=tmp_path, environment="production")
+
+        assert config.kalshi.environment == Environment.DEMO
+        assert config.logging.level == "DEBUG"
+
     def test_risk_yaml(self, tmp_path: Path) -> None:
         risk = tmp_path / "risk.yaml"
         risk.write_text(

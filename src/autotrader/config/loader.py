@@ -60,11 +60,15 @@ def load_config(
 
     Loading order (later values override earlier):
     1. config/base.yaml
-    2. config/{environment}.yaml (paper or live)
+    2. config/paper.yaml (demo) or config/live.yaml (production)
     3. config/strategies/*.yaml (merged under strategy keys)
     4. config/risk.yaml
     5. config/signal_sources/*.yaml
     6. Environment variables (AUTOTRADER__SECTION__KEY)
+
+    The optional ``environment`` argument (or ``AUTOTRADER__KALSHI__ENVIRONMENT``)
+    selects which environment overlay file is loaded in step 2. Final environment
+    variable overrides from step 6 still take precedence over every YAML file.
     """
     config_dir = Path(config_dir)
 
