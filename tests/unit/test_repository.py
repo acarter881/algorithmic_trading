@@ -347,6 +347,77 @@ class TestDailyPnlQueries:
         repo.record_fill(_fill_data(), strategy="leaderboard_alpha")
         assert repo.get_today_trade_count("leaderboard_alpha") == 1
 
+    def test_get_net_positions_by_ticker(self) -> None:
+        repo = _repo()
+        repo.record_fill(
+            _fill_data(side="yes", action="buy", count=10, price_cents=40, fee_cents=0),
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            _fill_data(
+                side="yes",
+                action="sell",
+                count=4,
+                price_cents=55,
+                fee_cents=0,
+                kalshi_fill_id="fill-close-partial",
+            ),
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            _fill_data(
+                ticker="KXTOPMODEL-CLAUDE",
+                side="no",
+                action="buy",
+                count=3,
+                price_cents=35,
+                fee_cents=0,
+                kalshi_fill_id="fill-no-open",
+            ),
+            strategy="leaderboard_alpha",
+        )
+
+        positions = repo.get_net_positions_by_ticker("leaderboard_alpha")
+
+        assert positions == {
+            "KXTOPMODEL-GPT5": 6,
+            "KXTOPMODEL-CLAUDE": -3,
+        }
+
+    def test_get_net_positions_by_ticker_excludes_flat_positions(self) -> None:
+        repo = _repo()
+        repo.record_fill(
+            _fill_data(side="yes", action="buy", count=5, fee_cents=0),
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            _fill_data(side="no", action="buy", count=5, fee_cents=0, kalshi_fill_id="fill-flat"),
+            strategy="leaderboard_alpha",
+        )
+
+        assert repo.get_net_positions_by_ticker("leaderboard_alpha") == {}
+
+    def test_get_net_positions_by_ticker_filters_is_paper_mode(self) -> None:
+        repo = _repo()
+        repo.record_fill(
+            _fill_data(side="yes", action="buy", count=7, fee_cents=0, is_paper=True),
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            _fill_data(
+                side="yes",
+                action="buy",
+                count=2,
+                fee_cents=0,
+                is_paper=False,
+                kalshi_fill_id="fill-live",
+            ),
+            strategy="leaderboard_alpha",
+        )
+
+        assert repo.get_net_positions_by_ticker("leaderboard_alpha", is_paper=True) == {"KXTOPMODEL-GPT5": 7}
+        assert repo.get_net_positions_by_ticker("leaderboard_alpha", is_paper=False) == {"KXTOPMODEL-GPT5": 2}
+
     def test_get_daily_pnl_wrong_date(self) -> None:
         repo = _repo()
         repo.record_fill(_fill_data(), strategy="leaderboard_alpha")

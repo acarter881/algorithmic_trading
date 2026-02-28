@@ -343,3 +343,28 @@ class TradingRepository:
         """Get total trades today for a strategy."""
         pnl = self.get_daily_pnl(strategy)
         return pnl.trade_count if pnl else 0
+
+    def get_net_positions_by_ticker(self, strategy: str, is_paper: bool | None = None) -> dict[str, int]:
+        """Compute current net YES-equivalent position by ticker for a strategy.
+
+        When ``is_paper`` is provided, only fills matching that execution mode
+        are considered.
+        """
+        try:
+            with self._session_factory() as session:
+                query = session.query(Fill).filter(Fill.strategy == strategy)
+                if is_paper is not None:
+                    query = query.filter(Fill.is_paper == is_paper)
+                fills = query.order_by(Fill.filled_at.asc(), Fill.id.asc()).all()
+
+            positions: dict[str, int] = {}
+            for fill in fills:
+                delta_qty, _ = self._yes_equivalent_trade(fill)
+                if delta_qty == 0:
+                    continue
+                positions[fill.ticker] = positions.get(fill.ticker, 0) + delta_qty
+
+            return {ticker: qty for ticker, qty in positions.items() if qty != 0}
+        except Exception:
+            logger.exception("net_positions_query_error", strategy=strategy, is_paper=is_paper)
+            return {}

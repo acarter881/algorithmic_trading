@@ -16,6 +16,7 @@ from autotrader.config.models import (
     Environment,
     KalshiConfig,
     LeaderboardAlphaConfig,
+    RiskStrategyConfig,
 )
 from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
@@ -24,6 +25,7 @@ from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
 from autotrader.state.models import Signal as SignalRow
+from autotrader.state.repository import TradingRepository
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -122,6 +124,63 @@ class TestTradingLoopInit:
         loop = TradingLoop(_config())
         await loop.initialize()
         assert loop.repository is None
+        await loop.shutdown()
+
+    async def test_initialize_restores_positions_from_persistence(self) -> None:
+        sf = _session_factory()
+        repo = TradingRepository(sf)
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 100,
+                "price_cents": 40,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-restart-seed",
+                "kalshi_fill_id": "fill-restart-seed",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(max_position_per_contract=100)
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data, session_factory=sf)
+
+        assert loop.strategy is not None
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 100
+
+        snapshot = loop.build_portfolio_snapshot()
+        assert len(snapshot.positions) == 1
+        assert snapshot.positions[0].ticker == "KXTOPMODEL-GPT5"
+        assert snapshot.positions[0].quantity == 100
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
 
     async def test_initialize_bootstraps_market_data_for_strategy(self, monkeypatch) -> None:
