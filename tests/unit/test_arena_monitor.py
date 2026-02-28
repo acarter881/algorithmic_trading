@@ -32,6 +32,7 @@ def _entry(
     rank_ub: int = 1,
     score: float = 1300.0,
     votes: int = 10000,
+    release_date: str = "",
 ) -> LeaderboardEntry:
     return LeaderboardEntry(
         model_name=name,
@@ -41,6 +42,7 @@ def _entry(
         rank_lb=rank,
         score=score,
         votes=votes,
+        release_date=release_date,
     )
 
 
@@ -77,6 +79,43 @@ class TestLeaderboardSnapshot:
                 _entry("B", org="OrgB", rank_ub=1),
             ]
         )
+        assert snap.top_org == "OrgB"
+
+    def test_top_model_tiebreak_score(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0),
+                _entry("B", rank_ub=1, score=1410.0),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_model_tiebreak_votes(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0, votes=10100),
+                _entry("B", rank_ub=1, score=1400.0, votes=10200),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_model_tiebreak_release_date(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0, votes=10100, release_date="2025-05-01"),
+                _entry("B", rank_ub=1, score=1400.0, votes=10100, release_date="2025-04-01"),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_org_tiebreak_consistent_with_settlement_rules(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", org="OrgA", rank_ub=1, score=1500.0, votes=11000, release_date="2025-03-10"),
+                _entry("B", org="OrgB", rank_ub=1, score=1500.0, votes=11000, release_date="2025-03-01"),
+            ]
+        )
+        assert snap.top_model == "B"
         assert snap.top_org == "OrgB"
 
     def test_by_model_name(self) -> None:
