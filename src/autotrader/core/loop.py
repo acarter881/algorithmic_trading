@@ -226,10 +226,10 @@ class TradingLoop:
         if not is_paper_mode:
             raise RuntimeError(f"no_tradable_markets_loaded: {message}")
 
-        # Paper mode degrades gracefully but emits repeated high-severity alerts.
-        for _ in range(3):
-            await self._send_error_alert("no_tradable_markets_loaded", message)
-            await self._send_system_alert("CRITICAL: no_tradable_markets_loaded", message)
+        # Paper/demo mode degrades gracefully — alert once and continue.
+        # The demo exchange typically lacks production series, so this is
+        # expected and should not spam the Discord channel.
+        await self._send_system_alert("Warning: no tradable markets", message)
 
     def _bootstrap_market_data(self) -> dict[str, Any]:
         """Discover active markets for configured target series at startup."""
