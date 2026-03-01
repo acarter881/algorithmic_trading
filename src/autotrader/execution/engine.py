@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from autotrader.api.client import KalshiAPIClient, KalshiAPIError, OrderRequest
-from autotrader.config.models import ExecutionMode
+from autotrader.config.models import ExecutionMode as ExecutionMode
 from autotrader.utils.fees import FeeCalculator
 
 if TYPE_CHECKING:
