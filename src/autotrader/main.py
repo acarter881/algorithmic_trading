@@ -141,5 +141,76 @@ def calc_fee(price_cents: int, quantity: int, maker: bool) -> None:
     click.echo(f"  Effective cost/contract: {result.effective_cost_cents}¢")
 
 
+@cli.command()
+@click.option("--config-dir", default="config", help="Path to configuration directory.")
+@click.option("--days", default=7, show_default=True, help="Number of days to include.")
+@click.option("--strategy", default=None, help="Filter by strategy name.")
+@click.option("--csv", "as_csv", is_flag=True, help="Output as CSV.")
+def pnl(config_dir: str, days: int, strategy: str | None, as_csv: bool) -> None:
+    """Show P&L report from the trading database."""
+    from autotrader.config.loader import load_config
+    from autotrader.state.database import create_db_engine, get_session_factory
+    from autotrader.state.repository import TradingRepository
+
+    config = load_config(config_dir=config_dir)
+    engine = create_db_engine(url=config.database.url, echo=False)
+    session_factory = get_session_factory(engine)
+    repo = TradingRepository(session_factory)
+
+    rows = repo.get_pnl_history(strategy=strategy, days=days)
+
+    if not rows:
+        click.echo("No P&L data found.")
+        return
+
+    if as_csv:
+        click.echo("date,strategy,realized_pnl_cents,unrealized_pnl_cents,fees_cents,trades,is_paper")
+        for row in rows:
+            date_str = row.date.strftime("%Y-%m-%d") if row.date else ""
+            click.echo(
+                f"{date_str},{row.strategy},{row.realized_pnl_cents},"
+                f"{row.unrealized_pnl_cents},{row.total_fees_cents},"
+                f"{row.trade_count},{row.is_paper}"
+            )
+        return
+
+    # Table output
+    click.echo(f"P&L Report (last {days} days)")
+    if strategy:
+        click.echo(f"Strategy: {strategy}")
+    click.echo()
+
+    header = f"{'Date':<12} {'Strategy':<20} {'Realized':>10} {'Unrealized':>10} {'Fees':>8} {'Trades':>7} {'Mode':<6}"
+    click.echo(header)
+    click.echo("-" * len(header))
+
+    total_realized = 0
+    total_unrealized = 0
+    total_fees = 0
+    total_trades = 0
+
+    for row in rows:
+        date_str = row.date.strftime("%Y-%m-%d") if row.date else "N/A"
+        mode = "paper" if row.is_paper else "live"
+        realized = row.realized_pnl_cents
+        unrealized = row.unrealized_pnl_cents
+        fees = row.total_fees_cents
+
+        click.echo(
+            f"{date_str:<12} {row.strategy:<20} {realized:>9}¢ {unrealized:>9}¢ {fees:>7}¢ {row.trade_count:>7} {mode:<6}"
+        )
+
+        total_realized += realized
+        total_unrealized += unrealized
+        total_fees += fees
+        total_trades += row.trade_count
+
+    click.echo("-" * len(header))
+    click.echo(
+        f"{'TOTAL':<12} {'':<20} {total_realized:>9}¢ {total_unrealized:>9}¢ "
+        f"{total_fees:>7}¢ {total_trades:>7}"
+    )
+
+
 if __name__ == "__main__":
     cli()

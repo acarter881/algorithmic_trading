@@ -344,6 +344,51 @@ class TradingRepository:
         pnl = self.get_daily_pnl(strategy)
         return pnl.trade_count if pnl else 0
 
+    def get_pnl_history(
+        self,
+        strategy: str | None = None,
+        days: int = 7,
+    ) -> list[DailyPnl]:
+        """Fetch daily P&L rows for the last *days* days, optionally filtered by strategy."""
+        cutoff = datetime.datetime.combine(
+            datetime.date.today() - datetime.timedelta(days=days - 1),
+            datetime.time(),
+        )
+        try:
+            with self._session_factory() as session:
+                query = session.query(DailyPnl).filter(DailyPnl.date >= cutoff)
+                if strategy:
+                    query = query.filter(DailyPnl.strategy == strategy)
+                rows = query.order_by(DailyPnl.date.asc(), DailyPnl.strategy.asc()).all()
+                # Detach from session so callers can use them freely
+                session.expunge_all()
+                return list(rows)
+        except Exception:
+            logger.exception("pnl_history_query_error", strategy=strategy, days=days)
+            return []
+
+    def get_all_fills(
+        self,
+        strategy: str | None = None,
+        days: int = 7,
+    ) -> list[Fill]:
+        """Fetch fill records for the last *days* days."""
+        cutoff = datetime.datetime.combine(
+            datetime.date.today() - datetime.timedelta(days=days - 1),
+            datetime.time(),
+        )
+        try:
+            with self._session_factory() as session:
+                query = session.query(Fill).filter(Fill.filled_at >= cutoff)
+                if strategy:
+                    query = query.filter(Fill.strategy == strategy)
+                rows = query.order_by(Fill.filled_at.asc()).all()
+                session.expunge_all()
+                return list(rows)
+        except Exception:
+            logger.exception("fills_query_error", strategy=strategy, days=days)
+            return []
+
     def get_net_positions_by_ticker(self, strategy: str, is_paper: bool | None = None) -> dict[str, int]:
         """Compute current net YES-equivalent position by ticker for a strategy.
 
