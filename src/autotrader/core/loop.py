@@ -110,7 +110,7 @@ class TradingLoop:
             fee_calculator=self._fee_calc,
         )
         self._strategies[primary.name] = primary
-        is_paper_mode = self._config.kalshi.environment.value != "production"
+        is_paper_mode = self._config.kalshi.execution_mode.value != "live"
 
         # Database repository (optional — gracefully degrades if not provided)
         if session_factory is not None:

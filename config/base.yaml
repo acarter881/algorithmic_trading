@@ -4,6 +4,7 @@
 
 kalshi:
   environment: demo
+  execution_mode: paper
   request_timeout_seconds: 30.0
   max_retries: 3
   rate_limit_buffer_pct: 0.10

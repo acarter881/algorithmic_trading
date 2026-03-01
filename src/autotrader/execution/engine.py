@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from autotrader.api.client import KalshiAPIClient, KalshiAPIError, OrderRequest
+from autotrader.config.models import ExecutionMode
 from autotrader.utils.fees import FeeCalculator
 
 if TYPE_CHECKING:
@@ -32,13 +33,6 @@ logger = structlog.get_logger("autotrader.execution.engine")
 
 
 # ── Types ────────────────────────────────────────────────────────────────
-
-
-class ExecutionMode(StrEnum):
-    """How orders are executed."""
-
-    PAPER = "paper"
-    LIVE = "live"
 
 
 class OrderStatus(StrEnum):

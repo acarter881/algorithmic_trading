@@ -3,6 +3,7 @@
 
 kalshi:
   environment: production
+  execution_mode: live
 
 database:
   url: "sqlite:///autotrader_live.db"
