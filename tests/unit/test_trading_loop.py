@@ -316,8 +316,8 @@ class TestTradingLoopTick:
         assert loop.risk_manager.kill_switch_active
 
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         await loop._tick()
 
@@ -370,13 +370,13 @@ class TestTradingLoopTick:
             return_value=MagicMock(yes_bid=48, yes_ask=50, last_price=49, event_ticker="KXTOPMODEL-EV1")
         )
 
-        assert loop._strategy is not None
-        loop._strategy.on_market_update = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_market_update = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
         await loop._tick()
 
         loop._market_data_client.get_market.assert_called_once_with("KXTOPMODEL-GPT5")
-        loop._strategy.on_market_update.assert_called_once_with(
+        loop.strategy.on_market_update.assert_called_once_with(
             {
                 "ticker": "KXTOPMODEL-GPT5",
                 "yes_bid": 48,
@@ -396,8 +396,8 @@ class TestTradingLoopTick:
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
         # Mock strategy to return a proposal
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         await loop._tick()
         assert loop.tick_count == 1
@@ -462,8 +462,8 @@ class TestTradingLoopTick:
             quantity=5,
             urgency=OrderUrgency.PASSIVE,
         )
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[bad_proposal])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[bad_proposal])  # type: ignore[method-assign]
 
         await loop._tick()
 
@@ -479,8 +479,8 @@ class TestTradingLoopTick:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
         await loop._tick()
         assert loop.execution_engine is not None
@@ -494,8 +494,8 @@ class TestTradingLoopTick:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         snapshot = PortfolioSnapshot(balance_cents=123_456)
         loop.build_portfolio_snapshot = MagicMock(return_value=snapshot)  # type: ignore[method-assign]
@@ -525,8 +525,8 @@ class TestTradingLoopTick:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         assert loop._risk is not None
         loop._risk.update_portfolio(PortfolioSnapshot(balance_cents=100_000))
@@ -667,9 +667,9 @@ class TestPortfolioSnapshot:
 
         loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
-        assert loop._strategy is not None
-        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 130
-        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 110
+        assert loop.strategy is not None
+        loop.strategy._contracts["KXTOPMODEL-GPT5"].position = 130
+        loop.strategy._contracts["KXTOPMODEL-GEMINI3"].position = 110
 
         snapshot = loop.build_portfolio_snapshot()
 
@@ -734,9 +734,9 @@ class TestPortfolioSnapshot:
 
         loop = TradingLoop(config)
         await loop.initialize(market_data=market_data)
-        assert loop._strategy is not None
-        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 140
-        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 90
+        assert loop.strategy is not None
+        loop.strategy._contracts["KXTOPMODEL-GPT5"].position = 140
+        loop.strategy._contracts["KXTOPMODEL-GEMINI3"].position = 90
 
         snapshot = loop.build_portfolio_snapshot()
 
@@ -815,8 +815,8 @@ class TestTradingLoopPersistence:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
         await loop._tick()
 
@@ -836,8 +836,8 @@ class TestTradingLoopPersistence:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         await loop._tick()
 
@@ -868,8 +868,8 @@ class TestTradingLoopPersistence:
             price_cents=0,  # fails price_sanity
             quantity=5,
         )
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[bad_proposal])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[bad_proposal])  # type: ignore[method-assign]
 
         await loop._tick()
 
@@ -929,8 +929,8 @@ class TestTradingLoopAlerting:
         assert loop._monitor is not None
         loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
 
-        assert loop._strategy is not None
-        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+        assert loop.strategy is not None
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
 
         # Mock the alerter's send_trade_alert
         assert loop._alerter is not None

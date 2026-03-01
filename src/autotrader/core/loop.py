@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
     from autotrader.config.models import AppConfig
-    from autotrader.strategies.base import ProposedOrder
+    from autotrader.strategies.base import ProposedOrder, Strategy
 
 logger = structlog.get_logger("autotrader.core.loop")
 
@@ -60,7 +60,7 @@ class TradingLoop:
 
         # Components — created in initialize()
         self._monitor: ArenaMonitor | None = None
-        self._strategy: LeaderboardAlphaStrategy | None = None
+        self._strategies: dict[str, Strategy] = {}
         self._risk: RiskManager | None = None
         self._engine: ExecutionEngine | None = None
         self._repo: TradingRepository | None = None
@@ -103,28 +103,32 @@ class TradingLoop:
         if market_data is None and self._api_client is not None:
             market_data = self._discover_markets(self._api_client)
 
-        # Strategy
-        self._strategy = LeaderboardAlphaStrategy(
+        # Strategy — primary (leaderboard_alpha) is always created.
+        # Additional strategies can be registered via register_strategy().
+        primary = LeaderboardAlphaStrategy(
             config=self._config.leaderboard_alpha,
             fee_calculator=self._fee_calc,
         )
+        self._strategies[primary.name] = primary
         is_paper_mode = self._config.kalshi.environment.value != "production"
 
         # Database repository (optional — gracefully degrades if not provided)
-        state_payload: dict[str, Any] | None = None
         if session_factory is not None:
             self._repo = TradingRepository(session_factory)
-            state_payload = {
-                "positions": self._repo.get_net_positions_by_ticker(self._strategy.name, is_paper=is_paper_mode),
-            }
 
         if market_data is None:
             market_data = self._bootstrap_market_data()
         self._ticker_event_map = self._extract_ticker_event_map(market_data)
-        if state_payload is None:
-            state_payload = {}
-        state_payload["ticker_event_map"] = dict(self._ticker_event_map)
-        await self._strategy.initialize(market_data, state_payload)
+
+        # Initialize all registered strategies
+        for strat in self._strategies.values():
+            state_payload: dict[str, Any] = {}
+            if self._repo is not None:
+                state_payload["positions"] = self._repo.get_net_positions_by_ticker(
+                    strat.name, is_paper=is_paper_mode
+                )
+            state_payload["ticker_event_map"] = dict(self._ticker_event_map)
+            await strat.initialize(market_data, state_payload)
 
         # Discord alerter (initialized early so startup validation can alert)
         self._alerter = DiscordAlerter(self._config.discord)
@@ -167,34 +171,41 @@ class TradingLoop:
             "trading_loop_initialized",
             mode=mode.value,
             poll_interval=self._config.arena_monitor.poll_interval_seconds,
-            target_series=self._config.leaderboard_alpha.target_series,
-            contracts_loaded=len(self._strategy.contracts),
+            strategies=list(self._strategies.keys()),
+            contracts_loaded=sum(
+                len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts")
+            ),
             persistence=self._repo is not None,
             discord=self._alerter.enabled,
         )
 
-        if not self._strategy.contracts:
+        primary = self._primary_strategy
+        if primary is not None and hasattr(primary, "contracts") and not primary.contracts:
             logger.warning(
                 "no_tradable_markets_loaded",
                 target_series=self._config.leaderboard_alpha.target_series,
                 hint="Check API credentials and that target series have open markets",
             )
 
+        total_contracts = sum(
+            len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts")
+        )
         # Record startup event
         self._persist_system_event(
             "startup",
-            {"mode": mode.value, "contracts_loaded": len(self._strategy.contracts)},
+            {"mode": mode.value, "contracts_loaded": total_contracts},
             "info",
         )
         await self._send_system_alert("Autotrader Started", f"Mode: {mode.value}")
 
     async def _validate_startup_markets(self, *, is_paper_mode: bool) -> None:
         """Validate that configured target series have at least one tradable contract."""
-        if self._strategy is None:
+        primary = self._primary_strategy
+        if primary is None or not hasattr(primary, "contracts"):
             return
 
         expected_series = list(self._config.leaderboard_alpha.target_series)
-        loaded_contracts = self._strategy.contracts
+        loaded_contracts = primary.contracts
 
         series_market_counts = {
             series: sum(1 for ticker in loaded_contracts if ticker.startswith(f"{series}-"))
@@ -321,8 +332,8 @@ class TradingLoop:
         await self._stop_websocket()
         if self._monitor:
             await self._monitor.teardown()
-        if self._strategy:
-            await self._strategy.teardown()
+        for strat in self._strategies.values():
+            await strat.teardown()
         if self._alerter:
             await self._alerter.teardown()
         logger.info("trading_loop_shutdown")
@@ -337,7 +348,27 @@ class TradingLoop:
 
     @property
     def strategy(self) -> LeaderboardAlphaStrategy | None:
-        return self._strategy
+        """Return the primary strategy (backward compatibility)."""
+        s = self._strategies.get("leaderboard_alpha")
+        if isinstance(s, LeaderboardAlphaStrategy):
+            return s
+        return None
+
+    @property
+    def strategies(self) -> dict[str, Strategy]:
+        """Return all registered strategies."""
+        return self._strategies
+
+    @property
+    def _primary_strategy(self) -> Strategy | None:
+        """Internal helper — returns the first registered strategy."""
+        if not self._strategies:
+            return None
+        return next(iter(self._strategies.values()))
+
+    def register_strategy(self, strategy: Strategy) -> None:
+        """Register an additional strategy (call before initialize)."""
+        self._strategies[strategy.name] = strategy
 
     @property
     def risk_manager(self) -> RiskManager | None:
@@ -434,7 +465,7 @@ class TradingLoop:
     async def _tick_inner(self) -> None:
         """Inner tick logic — exceptions bubble up to _tick()."""
         assert self._monitor is not None
-        assert self._strategy is not None
+        assert self._strategies
         assert self._risk is not None
         assert self._engine is not None
 
@@ -464,11 +495,12 @@ class TradingLoop:
         for sig in signals:
             self._persist_signal(sig)
 
-        # 2. Feed signals to strategy → collect proposals
+        # 2. Feed signals to all strategies → collect proposals
         all_proposals: list[ProposedOrder] = []
         for signal in signals:
-            proposals = await self._strategy.on_signal(signal)
-            all_proposals.extend(proposals)
+            for strat in self._strategies.values():
+                proposals = await strat.on_signal(signal)
+                all_proposals.extend(proposals)
 
         if not all_proposals:
             logger.debug("tick_no_proposals", tick=self._tick_count)
@@ -591,25 +623,31 @@ class TradingLoop:
         When WebSocket streaming is active and connected, REST polling is skipped
         because the ticker channel pushes updates in real time.
         """
-        if self._strategy is None or self._market_data_client is None:
+        if not self._strategies or self._market_data_client is None:
             return
 
         # Skip REST polling when WebSocket is streaming prices
         if self._ws_client is not None and self._ws_client.connected:
             return
 
-        for ticker in self._strategy.contracts:
+        # Collect tickers from all strategies
+        all_tickers: set[str] = set()
+        for strat in self._strategies.values():
+            if hasattr(strat, "contracts"):
+                all_tickers.update(strat.contracts.keys())
+
+        for ticker in all_tickers:
             try:
                 market = self._market_data_client.get_market(ticker)
-                await self._strategy.on_market_update(
-                    {
-                        "ticker": ticker,
-                        "yes_bid": market.yes_bid,
-                        "yes_ask": market.yes_ask,
-                        "last_price": market.last_price,
-                        "event_ticker": market.event_ticker,
-                    }
-                )
+                update = {
+                    "ticker": ticker,
+                    "yes_bid": market.yes_bid,
+                    "yes_ask": market.yes_ask,
+                    "last_price": market.last_price,
+                    "event_ticker": market.event_ticker,
+                }
+                for strat in self._strategies.values():
+                    await strat.on_market_update(update)
                 if market.event_ticker:
                     self._ticker_event_map[ticker] = market.event_ticker
             except Exception:
@@ -628,8 +666,14 @@ class TradingLoop:
         and once on startup to recover from any prior unclean shutdown.
         """
         api = self._api_client or self._market_data_client
-        if api is None or self._strategy is None:
+        if api is None or not self._strategies:
             return
+
+        # Collect all tracked tickers across strategies
+        all_tracked: set[str] = set()
+        for strat in self._strategies.values():
+            if hasattr(strat, "contracts"):
+                all_tracked.update(strat.contracts.keys())
 
         try:
             exchange_positions: dict[str, int] = {}
@@ -637,25 +681,29 @@ class TradingLoop:
             while True:
                 page, cursor = api.get_positions(limit=200, cursor=cursor)
                 for pos in page:
-                    if pos.ticker in self._strategy.contracts:
+                    if pos.ticker in all_tracked:
                         exchange_positions[pos.ticker] = pos.position
                 if not cursor or not page:
                     break
 
-            # Compare against strategy in-memory state
+            # Compare against strategy in-memory state (across all strategies)
             mismatches: list[dict[str, object]] = []
-            for ticker, contract in self._strategy.contracts.items():
-                exchange_qty = exchange_positions.get(ticker, 0)
-                if contract.position != exchange_qty:
-                    mismatches.append(
-                        {
-                            "ticker": ticker,
-                            "strategy_position": contract.position,
-                            "exchange_position": exchange_qty,
-                        }
-                    )
-                    # Correct the strategy's position to match the exchange
-                    contract.position = exchange_qty
+            for strat in self._strategies.values():
+                if not hasattr(strat, "contracts"):
+                    continue
+                for ticker, contract in strat.contracts.items():
+                    exchange_qty = exchange_positions.get(ticker, 0)
+                    if contract.position != exchange_qty:
+                        mismatches.append(
+                            {
+                                "ticker": ticker,
+                                "strategy": strat.name,
+                                "strategy_position": contract.position,
+                                "exchange_position": exchange_qty,
+                            }
+                        )
+                        # Correct the strategy's position to match the exchange
+                        contract.position = exchange_qty
 
             if mismatches:
                 logger.warning(
@@ -679,7 +727,7 @@ class TradingLoop:
             else:
                 logger.debug(
                     "position_reconciliation_ok",
-                    tracked_tickers=len(self._strategy.contracts),
+                    tracked_tickers=len(all_tracked),
                     tick=self._tick_count,
                 )
         except Exception:
@@ -697,8 +745,11 @@ class TradingLoop:
             is_demo=is_demo,
         )
 
-        # Subscribe to ticker channel for all tracked markets
-        tickers = list(self._strategy.contracts.keys()) if self._strategy else []
+        # Subscribe to ticker channel for all tracked markets across all strategies
+        tickers: list[str] = []
+        for strat in self._strategies.values():
+            if hasattr(strat, "contracts"):
+                tickers.extend(strat.contracts.keys())
         if tickers:
             self._ws_client.subscribe(Channel.TICKER, tickers=tickers)
 
@@ -736,15 +787,24 @@ class TradingLoop:
         logger.info("websocket_stopped")
 
     async def _on_ws_ticker(self, message: dict[str, Any]) -> None:
-        """Handle a WebSocket ticker message — route to strategy."""
-        if self._strategy is None:
+        """Handle a WebSocket ticker message — route to all strategies."""
+        if not self._strategies:
             return
         msg = message.get("msg", {})
         if not isinstance(msg, dict):
             return
         ticker = msg.get("market_ticker", "")
-        if not ticker or ticker not in self._strategy.contracts:
+        if not ticker:
             return
+
+        # Check if any strategy tracks this ticker
+        relevant = any(
+            hasattr(s, "contracts") and ticker in s.contracts
+            for s in self._strategies.values()
+        )
+        if not relevant:
+            return
+
         update: dict[str, Any] = {"ticker": ticker}
         for key in ("yes_bid", "yes_ask", "last_price"):
             value = msg.get(key)
@@ -754,7 +814,8 @@ class TradingLoop:
         if isinstance(event_ticker, str) and event_ticker:
             update["event_ticker"] = event_ticker
             self._ticker_event_map[ticker] = event_ticker
-        await self._strategy.on_market_update(update)
+        for strat in self._strategies.values():
+            await strat.on_market_update(update)
 
     async def _on_ws_fill(self, message: dict[str, Any]) -> None:
         """Handle a WebSocket fill message — route to fill callback."""
@@ -766,20 +827,31 @@ class TradingLoop:
 
     def _on_fill(self, fill_data: dict[str, Any]) -> None:
         """Handle a fill from the execution engine — update strategy + persist."""
+        # Determine which strategy this fill belongs to from client_order_id prefix
+        strategy_name = (
+            fill_data.get("client_order_id", "").split("-")[0] if fill_data.get("client_order_id") else "unknown"
+        )
+
         # Persist fill
         if self._repo:
-            strategy = (
-                fill_data.get("client_order_id", "").split("-")[0] if fill_data.get("client_order_id") else "unknown"
-            )
-            self._repo.record_fill(fill_data, strategy)
+            self._repo.record_fill(fill_data, strategy_name)
 
-        if self._strategy is None:
+        if not self._strategies:
             return
-        # Run the async on_fill synchronously within the event loop
+
+        # Route to the matching strategy, or all strategies if unknown
+        target_strategies = (
+            [self._strategies[strategy_name]]
+            if strategy_name in self._strategies
+            else list(self._strategies.values())
+        )
+
+        # Run the async on_fill within the event loop
         # (this callback is invoked synchronously by the engine)
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._strategy.on_fill(fill_data))
+            for strat in target_strategies:
+                loop.create_task(strat.on_fill(fill_data))
         except RuntimeError:
             # No running loop — skip (happens in tests without async context)
             pass
@@ -794,8 +866,10 @@ class TradingLoop:
         """
         balance_cents = self._current_balance_cents()
         positions: list[PositionInfo] = []
-        if self._strategy:
-            for ticker, contract in self._strategy.contracts.items():
+        for strat in self._strategies.values():
+            if not hasattr(strat, "contracts"):
+                continue
+            for ticker, contract in strat.contracts.items():
                 if contract.position != 0:
                     positions.append(
                         PositionInfo(
@@ -808,11 +882,12 @@ class TradingLoop:
 
         daily_realized: dict[str, int] = {}
         daily_unrealized: dict[str, int] = {}
-        if self._repo and self._strategy:
-            pnl = self._repo.get_daily_pnl(self._strategy.name)
-            if pnl is not None:
-                daily_realized[self._strategy.name] = pnl.realized_pnl_cents
-                daily_unrealized[self._strategy.name] = pnl.unrealized_pnl_cents
+        if self._repo:
+            for strat in self._strategies.values():
+                pnl = self._repo.get_daily_pnl(strat.name)
+                if pnl is not None:
+                    daily_realized[strat.name] = pnl.realized_pnl_cents
+                    daily_unrealized[strat.name] = pnl.unrealized_pnl_cents
 
         return PortfolioSnapshot(
             balance_cents=balance_cents,
@@ -839,11 +914,12 @@ class TradingLoop:
         mapped = self._ticker_event_map.get(ticker)
         if mapped:
             return mapped
-        if self._strategy is not None:
-            resolved = self._strategy.resolve_event_ticker(ticker)
-            if resolved:
-                self._ticker_event_map[ticker] = resolved
-                return resolved
+        for strat in self._strategies.values():
+            if hasattr(strat, "resolve_event_ticker"):
+                resolved = strat.resolve_event_ticker(ticker)
+                if resolved:
+                    self._ticker_event_map[ticker] = resolved
+                    return resolved
         return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def _current_balance_cents(self) -> int:
