@@ -19,14 +19,16 @@ import httpx
 import structlog
 
 from autotrader.config.models import ArenaMonitorConfig
-from autotrader.signals.arena_parser import parse_leaderboard
+from autotrader.signals.arena_parser import extract_pairwise_aggregates, parse_leaderboard
 from autotrader.signals.arena_types import (
     LeaderboardDiff,
     LeaderboardSnapshot,
+    PairwiseChange,
     RankChange,
     ScoreChange,
 )
 from autotrader.signals.base import Signal, SignalSource, SignalUrgency
+from autotrader.signals.settlement import resolve_top_model
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("autotrader.signals.arena_monitor")
 
@@ -35,6 +37,18 @@ DEFAULT_SCORE_SHIFT_THRESHOLD = 3.0
 
 # Target Kalshi series for leaderboard signals
 TARGET_SERIES = ["KXTOPMODEL", "KXLLM1"]
+
+
+class ArenaMonitorFailureThresholdError(RuntimeError):
+    """Raised when leaderboard fetch failures hit the configured threshold."""
+
+    def __init__(self, consecutive_failures: int, max_consecutive_failures: int, urls_attempted: list[str]) -> None:
+        self.consecutive_failures = consecutive_failures
+        self.max_consecutive_failures = max_consecutive_failures
+        self.urls_attempted = urls_attempted
+        super().__init__(
+            f"Arena monitor fetch failures exceeded threshold ({consecutive_failures}/{max_consecutive_failures})"
+        )
 
 
 class ArenaMonitor(SignalSource):
@@ -119,7 +133,22 @@ class ArenaMonitor(SignalSource):
             "arena_fetch_all_failed",
             consecutive_failures=self._consecutive_failures,
             max_failures=self._config.max_consecutive_failures,
+            urls_attempted=urls,
         )
+
+        if self._consecutive_failures >= self._config.max_consecutive_failures:
+            logger.error(
+                "arena_failure_threshold_exceeded",
+                consecutive_failures=self._consecutive_failures,
+                max_failures=self._config.max_consecutive_failures,
+                urls_attempted=urls,
+            )
+            raise ArenaMonitorFailureThresholdError(
+                consecutive_failures=self._consecutive_failures,
+                max_consecutive_failures=self._config.max_consecutive_failures,
+                urls_attempted=urls,
+            )
+
         return None
 
     async def _try_fetch(self, url: str) -> LeaderboardSnapshot | None:
@@ -138,8 +167,11 @@ class ArenaMonitor(SignalSource):
                 logger.warning("arena_no_entries_parsed", url=url)
                 return None
 
+            pairwise = extract_pairwise_aggregates(content)
+
             snapshot = LeaderboardSnapshot(
                 entries=entries,
+                pairwise=pairwise,
                 source_url=url,
                 captured_at=datetime.datetime.utcnow(),
             )
@@ -181,6 +213,7 @@ class ArenaMonitor(SignalSource):
         # Rank and score changes for models present in both
         rank_changes: list[RankChange] = []
         score_changes: list[ScoreChange] = []
+        pairwise_changes: list[PairwiseChange] = []
 
         for model_name in sorted(prev_names & curr_names):
             prev_entry = prev_by_name[model_name]
@@ -212,14 +245,32 @@ class ArenaMonitor(SignalSource):
                     )
                 )
 
+            prev_pair = previous.pairwise.get(model_name)
+            curr_pair = current.pairwise.get(model_name)
+            if prev_pair and curr_pair:
+                win_delta = curr_pair.average_pairwise_win_rate - prev_pair.average_pairwise_win_rate
+                if abs(win_delta) >= 0.01 or curr_pair.total_pairwise_battles != prev_pair.total_pairwise_battles:
+                    pairwise_changes.append(
+                        PairwiseChange(
+                            model_name=model_name,
+                            old_average_pairwise_win_rate=prev_pair.average_pairwise_win_rate,
+                            new_average_pairwise_win_rate=curr_pair.average_pairwise_win_rate,
+                            old_total_pairwise_battles=prev_pair.total_pairwise_battles,
+                            new_total_pairwise_battles=curr_pair.total_pairwise_battles,
+                        )
+                    )
+
         # Leader change
-        prev_leader = previous.top_model or ""
-        curr_leader = current.top_model or ""
+        prev_winner = resolve_top_model(previous.entries)
+        curr_winner = resolve_top_model(current.entries)
+        prev_leader = prev_winner.model_name if prev_winner else ""
+        curr_leader = curr_winner.model_name if curr_winner else ""
         leader_changed = prev_leader != curr_leader and prev_leader != "" and curr_leader != ""
 
         return LeaderboardDiff(
             rank_changes=rank_changes,
             score_changes=score_changes,
+            pairwise_changes=pairwise_changes,
             new_entries=new_entries,
             removed_entries=removed_entries,
             leader_changed=leader_changed,
@@ -246,6 +297,8 @@ class ArenaMonitor(SignalSource):
 
         # Leader change — highest urgency
         if diff.leader_changed:
+            resolved = resolve_top_model(current.entries)
+            new_top_org = resolved.organization if resolved is not None else ""
             signals.append(
                 Signal(
                     source=self.name,
@@ -255,6 +308,7 @@ class ArenaMonitor(SignalSource):
                         "new_leader": diff.new_leader,
                         "previous_leader": diff.previous_leader,
                         "source_url": current.source_url,
+                        "new_top_org": new_top_org,
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.HIGH,
@@ -262,8 +316,10 @@ class ArenaMonitor(SignalSource):
             )
 
         # Rank changes
+        curr_by_name = current.by_model_name()
         for rc in diff.rank_changes:
             urgency = SignalUrgency.HIGH if rc.new_rank_ub == 1 or rc.old_rank_ub == 1 else SignalUrgency.MEDIUM
+            curr_entry = curr_by_name.get(rc.model_name)
             signals.append(
                 Signal(
                     source=self.name,
@@ -277,6 +333,9 @@ class ArenaMonitor(SignalSource):
                         "new_rank": rc.new_rank,
                         "old_score": rc.old_score,
                         "new_score": rc.new_score,
+                        "votes": curr_entry.votes if curr_entry else 0,
+                        "is_preliminary": curr_entry.is_preliminary if curr_entry else False,
+                        "release_date": curr_entry.release_date if curr_entry else "",
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=urgency,
@@ -301,6 +360,25 @@ class ArenaMonitor(SignalSource):
                 )
             )
 
+        # Pairwise shifts
+        for pc in diff.pairwise_changes:
+            signals.append(
+                Signal(
+                    source=self.name,
+                    timestamp=now,
+                    event_type="pairwise_shift",
+                    data={
+                        "model_name": pc.model_name,
+                        "old_average_pairwise_win_rate": pc.old_average_pairwise_win_rate,
+                        "new_average_pairwise_win_rate": pc.new_average_pairwise_win_rate,
+                        "old_total_pairwise_battles": pc.old_total_pairwise_battles,
+                        "new_total_pairwise_battles": pc.new_total_pairwise_battles,
+                    },
+                    relevant_series=TARGET_SERIES,
+                    urgency=SignalUrgency.MEDIUM,
+                )
+            )
+
         # New models
         for entry in diff.new_entries:
             urgency = SignalUrgency.HIGH if entry.rank_ub == 1 else SignalUrgency.LOW
@@ -317,6 +395,7 @@ class ArenaMonitor(SignalSource):
                         "score": entry.score,
                         "votes": entry.votes,
                         "is_preliminary": entry.is_preliminary,
+                        "release_date": entry.release_date,
                     },
                     relevant_series=TARGET_SERIES,
                     urgency=urgency,
@@ -351,7 +430,7 @@ class ArenaMonitor(SignalSource):
 
     # ── Snapshot Serialization ────────────────────────────────────────
 
-    def snapshot_to_dict(self, snapshot: LeaderboardSnapshot) -> dict[str, list[dict[str, object]]]:
+    def snapshot_to_dict(self, snapshot: LeaderboardSnapshot) -> dict[str, object]:
         """Serialize a snapshot for database storage (LeaderboardSnapshot.snapshot_data)."""
         return {
             "entries": [
@@ -368,7 +447,14 @@ class ArenaMonitor(SignalSource):
                     "is_preliminary": e.is_preliminary,
                 }
                 for e in snapshot.entries
-            ]
+            ],
+            "pairwise": {
+                name: {
+                    "total_pairwise_battles": p.total_pairwise_battles,
+                    "average_pairwise_win_rate": p.average_pairwise_win_rate,
+                }
+                for name, p in snapshot.pairwise.items()
+            },
         }
 
     @property

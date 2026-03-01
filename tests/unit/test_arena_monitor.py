@@ -11,10 +11,11 @@ import httpx
 import pytest
 
 from autotrader.config.models import ArenaMonitorConfig
-from autotrader.signals.arena_monitor import ArenaMonitor
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.signals.arena_types import (
     LeaderboardEntry,
     LeaderboardSnapshot,
+    PairwiseAggregate,
 )
 from autotrader.signals.base import SignalUrgency
 
@@ -31,6 +32,7 @@ def _entry(
     rank_ub: int = 1,
     score: float = 1300.0,
     votes: int = 10000,
+    release_date: str = "",
 ) -> LeaderboardEntry:
     return LeaderboardEntry(
         model_name=name,
@@ -40,6 +42,7 @@ def _entry(
         rank_lb=rank,
         score=score,
         votes=votes,
+        release_date=release_date,
     )
 
 
@@ -76,6 +79,43 @@ class TestLeaderboardSnapshot:
                 _entry("B", org="OrgB", rank_ub=1),
             ]
         )
+        assert snap.top_org == "OrgB"
+
+    def test_top_model_tiebreak_score(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0),
+                _entry("B", rank_ub=1, score=1410.0),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_model_tiebreak_votes(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0, votes=10100),
+                _entry("B", rank_ub=1, score=1400.0, votes=10200),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_model_tiebreak_release_date(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", rank_ub=1, score=1400.0, votes=10100, release_date="2025-05-01"),
+                _entry("B", rank_ub=1, score=1400.0, votes=10100, release_date="2025-04-01"),
+            ]
+        )
+        assert snap.top_model == "B"
+
+    def test_top_org_tiebreak_consistent_with_settlement_rules(self) -> None:
+        snap = _snapshot(
+            [
+                _entry("A", org="OrgA", rank_ub=1, score=1500.0, votes=11000, release_date="2025-03-10"),
+                _entry("B", org="OrgB", rank_ub=1, score=1500.0, votes=11000, release_date="2025-03-01"),
+            ]
+        )
+        assert snap.top_model == "B"
         assert snap.top_org == "OrgB"
 
     def test_by_model_name(self) -> None:
@@ -358,6 +398,28 @@ class TestFetching:
         await monitor.teardown()
 
     @pytest.mark.asyncio
+    async def test_fetch_raises_when_failure_threshold_reached(self) -> None:
+        config = ArenaMonitorConfig(max_consecutive_failures=2)
+        monitor = ArenaMonitor(config=config)
+        await monitor.initialize()
+
+        async def mock_get(url: str) -> MagicMock:
+            raise httpx.RequestError("Connection refused")
+
+        with patch.object(monitor._http_client, "get", side_effect=mock_get):
+            snapshot = await monitor._fetch_leaderboard()
+            assert snapshot is None
+
+            with pytest.raises(ArenaMonitorFailureThresholdError) as exc:
+                await monitor._fetch_leaderboard()
+
+        assert monitor.consecutive_failures == 2
+        assert exc.value.consecutive_failures == 2
+        assert exc.value.max_consecutive_failures == 2
+        assert exc.value.urls_attempted == [config.primary_url, *config.fallback_urls]
+        await monitor.teardown()
+
+    @pytest.mark.asyncio
     async def test_poll_returns_signals(self) -> None:
         json_data = (FIXTURES / "arena_leaderboard.json").read_text()
         monitor = ArenaMonitor()
@@ -427,4 +489,26 @@ class TestSnapshotSerialization:
         monitor = ArenaMonitor()
         snap = _snapshot([])
         data = monitor.snapshot_to_dict(snap)
-        assert data == {"entries": []}
+        assert data == {"entries": [], "pairwise": {}}
+
+
+class TestPairwiseSignals:
+    def test_generates_pairwise_shift_signal(self) -> None:
+        monitor = ArenaMonitor()
+        previous = LeaderboardSnapshot(
+            entries=[LeaderboardEntry(model_name="A", rank=1, rank_ub=1, score=1500, votes=1000)],
+            pairwise={
+                "A": PairwiseAggregate(model_name="A", total_pairwise_battles=1000, average_pairwise_win_rate=0.51)
+            },
+            source_url="x",
+        )
+        current = LeaderboardSnapshot(
+            entries=[LeaderboardEntry(model_name="A", rank=1, rank_ub=1, score=1501, votes=1100)],
+            pairwise={
+                "A": PairwiseAggregate(model_name="A", total_pairwise_battles=1300, average_pairwise_win_rate=0.54)
+            },
+            source_url="x",
+        )
+        monitor.previous_snapshot = previous
+        signals = monitor._generate_signals(current)
+        assert any(s.event_type == "pairwise_shift" for s in signals)

@@ -30,4 +30,4 @@ ENV AUTOTRADER__KALSHI__ENVIRONMENT=demo \
 VOLUME ["/data", "/logs"]
 
 ENTRYPOINT ["autotrader"]
-CMD ["run", "--config-dir", "config", "--environment", "demo"]
+CMD ["run", "--config-dir", "config"]

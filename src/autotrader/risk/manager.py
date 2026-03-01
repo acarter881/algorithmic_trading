@@ -93,6 +93,7 @@ class PortfolioSnapshot:
     positions: list[PositionInfo] = field(default_factory=list)
     daily_realized_pnl_cents: dict[str, int] = field(default_factory=dict)  # strategy → cents
     daily_unrealized_pnl_cents: dict[str, int] = field(default_factory=dict)  # strategy → cents
+    ticker_event_map: dict[str, str] = field(default_factory=dict)  # contract ticker → event ticker
 
 
 # ── Risk Manager ─────────────────────────────────────────────────────────
@@ -232,15 +233,16 @@ class RiskManager:
 
         max_pos = strategy_config.max_position_per_contract
         current_pos = self._current_position_for_ticker(order.ticker)
+        signed_delta = self._signed_position_delta(order)
 
-        # The order adds to position in the direction of its side
-        new_pos = current_pos + order.quantity
-        if new_pos > max_pos:
+        new_pos = current_pos + signed_delta
+        if abs(new_pos) > max_pos:
             return RiskCheckResult(
                 check_name="position_per_contract",
                 verdict=RiskVerdict.REJECTED,
                 reason=(
-                    f"Would exceed per-contract limit: current={current_pos}, order={order.quantity}, max={max_pos:.0f}"
+                    f"Would exceed per-contract limit: "
+                    f"current={current_pos}, delta={signed_delta}, projected={new_pos}, max={max_pos:.0f}"
                 ),
             )
         return RiskCheckResult(check_name="position_per_contract", verdict=RiskVerdict.APPROVED)
@@ -253,16 +255,17 @@ class RiskManager:
         max_event_pos = strategy_config.max_position_per_event
         event_ticker = self._event_ticker_for(order.ticker)
         current_event_pos = self._current_position_for_event(event_ticker)
+        signed_delta = self._signed_position_delta(order)
 
-        new_event_pos = current_event_pos + order.quantity
-        if new_event_pos > max_event_pos:
+        new_event_pos = current_event_pos + signed_delta
+        if abs(new_event_pos) > max_event_pos:
             return RiskCheckResult(
                 check_name="position_per_event",
                 verdict=RiskVerdict.REJECTED,
                 reason=(
                     f"Would exceed per-event limit: "
                     f"event={event_ticker}, current={current_event_pos}, "
-                    f"order={order.quantity}, max={max_event_pos:.0f}"
+                    f"delta={signed_delta}, projected={new_event_pos}, max={max_event_pos:.0f}"
                 ),
             )
         return RiskCheckResult(check_name="position_per_event", verdict=RiskVerdict.APPROVED)
@@ -291,13 +294,30 @@ class RiskManager:
         balance = self._portfolio.balance_cents
 
         if balance <= 0:
-            # Cannot compute exposure without a balance; allow order through
-            # (the execution engine should handle zero-balance separately)
-            return RiskCheckResult(check_name="portfolio_exposure", verdict=RiskVerdict.APPROVED)
+            return RiskCheckResult(
+                check_name="portfolio_exposure",
+                verdict=RiskVerdict.REJECTED,
+                reason=(f"Cannot evaluate portfolio exposure: invalid balance={balance}c"),
+            )
 
         current_exposure = self._total_exposure_cents()
-        order_cost = order.price_cents * order.quantity
-        new_exposure = current_exposure + order_cost
+        current_pos = self._current_position_for_ticker(order.ticker)
+        new_pos = current_pos + self._signed_position_delta(order)
+        current_contract_exposure = self._ticker_exposure_cents(order.ticker)
+        current_abs_pos = abs(current_pos)
+        new_abs_pos = abs(new_pos)
+
+        if current_abs_pos == 0:
+            new_contract_exposure = new_abs_pos * order.price_cents
+        elif new_abs_pos <= current_abs_pos:
+            # Reduce existing exposure at existing blended carrying cost.
+            new_contract_exposure = round(current_contract_exposure * (new_abs_pos / current_abs_pos))
+        else:
+            # Existing carrying exposure plus incremental size at the new order price.
+            added_abs_pos = new_abs_pos - current_abs_pos
+            new_contract_exposure = current_contract_exposure + (added_abs_pos * order.price_cents)
+
+        new_exposure = current_exposure - current_contract_exposure + new_contract_exposure
         exposure_pct = new_exposure / balance
 
         if exposure_pct > max_pct:
@@ -327,12 +347,32 @@ class RiskManager:
         for p in self._portfolio.positions:
             if p.ticker == ticker:
                 return p.event_ticker
-        return ticker
+        mapped_event = self._portfolio.ticker_event_map.get(ticker)
+        if mapped_event:
+            return mapped_event
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
 
     def _current_position_for_event(self, event_ticker: str) -> int:
         """Sum of all position quantities across an event."""
         return sum(p.quantity for p in self._portfolio.positions if p.event_ticker == event_ticker)
 
     def _total_exposure_cents(self) -> int:
-        """Total portfolio exposure = sum of (abs(qty) * avg_cost) across positions."""
+        """Total gross economic exposure across contracts.
+
+        Positions are tracked as signed YES-equivalent quantities
+        (positive=long YES, negative=long NO). Exposure is gross, so a
+        long YES and long NO position both contribute positively.
+        """
         return sum(abs(p.quantity) * int(p.avg_cost_cents) for p in self._portfolio.positions)
+
+    def _ticker_exposure_cents(self, ticker: str) -> int:
+        """Gross economic exposure attributable to a single ticker."""
+        return sum(abs(p.quantity) * int(p.avg_cost_cents) for p in self._portfolio.positions if p.ticker == ticker)
+
+    def _signed_position_delta(self, order: ProposedOrder) -> int:
+        """Convert an order into signed YES-equivalent position delta.
+
+        Follows the same convention as ``LeaderboardAlphaStrategy.on_fill``:
+        buying YES increases position, buying NO decreases position.
+        """
+        return order.quantity if order.side.lower() == "yes" else -order.quantity

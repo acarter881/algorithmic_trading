@@ -89,6 +89,7 @@ class Fill(Base):
     kalshi_fill_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     ticker: Mapped[str] = mapped_column(String(64), index=True)
     side: Mapped[str] = mapped_column(String(4))
+    action: Mapped[str] = mapped_column(String(4), default="buy")
     price_cents: Mapped[int] = mapped_column(Integer)
     quantity: Mapped[int] = mapped_column(Integer)
     fee_cents: Mapped[int] = mapped_column(Integer, default=0)

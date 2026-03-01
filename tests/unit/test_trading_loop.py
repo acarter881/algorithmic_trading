@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -14,15 +15,20 @@ from autotrader.config.models import (
     AppConfig,
     ArenaMonitorConfig,
     DiscordConfig,
+    Environment,
     KalshiConfig,
     LeaderboardAlphaConfig,
+    RiskStrategyConfig,
 )
 from autotrader.core.loop import TradingLoop
 from autotrader.execution.engine import ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
+from autotrader.risk.manager import PortfolioSnapshot, PositionInfo
+from autotrader.signals.arena_monitor import ArenaMonitorFailureThresholdError
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.state.models import Base, Fill, Order, RiskEvent, SystemEvent
 from autotrader.state.models import Signal as SignalRow
+from autotrader.state.repository import TradingRepository
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -88,6 +94,36 @@ class TestTradingLoopInit:
         assert loop.execution_engine.mode == ExecutionMode.PAPER
         await loop.shutdown()
 
+    async def test_initialize_live_mode_configures_kalshi_client(self, monkeypatch) -> None:
+        mock_client = MagicMock()
+        monkeypatch.setattr("autotrader.core.loop.KalshiAPIClient", MagicMock(return_value=mock_client))
+
+        config = _config()
+        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
+
+        loop = TradingLoop(config)
+        await loop.initialize(
+            market_data={
+                "markets": [
+                    {
+                        "ticker": "KXTOPMODEL-GPT5",
+                        "title": "Top model",
+                        "subtitle": "GPT-5",
+                        "yes_bid": 44,
+                        "yes_ask": 46,
+                        "last_price": 45,
+                    }
+                ]
+            }
+        )
+
+        assert mock_client.connect.call_count >= 1
+        mock_client.connect.assert_any_call(private_key_pem=ANY)
+        assert loop.execution_engine is not None
+        assert loop.execution_engine.mode == ExecutionMode.LIVE
+        assert loop.execution_engine._api is mock_client
+        await loop.shutdown()
+
     async def test_not_running_initially(self) -> None:
         loop = TradingLoop(_config())
         assert not loop.running
@@ -106,8 +142,190 @@ class TestTradingLoopInit:
         assert loop.repository is None
         await loop.shutdown()
 
+    async def test_initialize_restores_positions_from_persistence(self) -> None:
+        sf = _session_factory()
+        repo = TradingRepository(sf)
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 100,
+                "price_cents": 40,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-restart-seed",
+                "kalshi_fill_id": "fill-restart-seed",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(max_position_per_contract=100)
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data, session_factory=sf)
+
+        assert loop.strategy is not None
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 100
+
+        snapshot = loop.build_portfolio_snapshot()
+        assert len(snapshot.positions) == 1
+        assert snapshot.positions[0].ticker == "KXTOPMODEL-GPT5"
+        assert snapshot.positions[0].quantity == 100
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+        loop.strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
+        await loop.shutdown()
+
+    async def test_initialize_bootstraps_market_data_for_strategy(self, monkeypatch) -> None:
+        market_a = MagicMock(
+            ticker="KXTOPMODEL-GPT5",
+            title="Top model",
+            subtitle="GPT-5",
+            yes_bid=44,
+            yes_ask=46,
+            last_price=45,
+        )
+        market_b = MagicMock(
+            ticker="KXLLM1-CLAUDE",
+            title="LLM #1",
+            subtitle="Claude",
+            yes_bid=39,
+            yes_ask=41,
+            last_price=40,
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_markets.side_effect = [
+            ([market_a], None),
+            ([market_b], None),
+        ]
+        monkeypatch.setattr("autotrader.core.loop.KalshiAPIClient", MagicMock(return_value=mock_client))
+
+        config = _config()
+        config.leaderboard_alpha.target_series = ["KXTOPMODEL", "KXLLM1"]
+
+        loop = TradingLoop(config)
+        await loop.initialize()
+
+        assert loop.strategy is not None
+        assert loop.strategy._resolve_ticker("GPT-5") == "KXTOPMODEL-GPT5"
+        assert loop.strategy._resolve_ticker("Claude") == "KXLLM1-CLAUDE"
+
+        await loop.shutdown()
+
+    async def test_initialize_production_raises_when_expected_series_missing_markets(self) -> None:
+        config = _config()
+        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION)
+
+        loop = TradingLoop(config)
+        with pytest.raises(RuntimeError, match="no_tradable_markets_loaded"):
+            await loop.initialize(market_data={"markets": []})
+
+    async def test_initialize_paper_mode_sends_repeated_alerts_when_series_missing_markets(self, monkeypatch) -> None:
+        mock_alerter = MagicMock()
+        mock_alerter.enabled = True
+        mock_alerter.initialize = AsyncMock()
+        mock_alerter.teardown = AsyncMock()
+        mock_alerter.send_error_alert = AsyncMock()
+        mock_alerter.send_system_alert = AsyncMock()
+
+        monkeypatch.setattr("autotrader.core.loop.DiscordAlerter", MagicMock(return_value=mock_alerter))
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data={"markets": []})
+
+        assert mock_alerter.send_error_alert.await_count == 3
+        assert mock_alerter.send_system_alert.await_count >= 4
+        first_error_call = mock_alerter.send_error_alert.await_args_list[0]
+        assert first_error_call.args[0] == "no_tradable_markets_loaded"
+        assert "Missing series: KXTOPMODEL" in first_error_call.args[1]
+
+        await loop.shutdown()
+
 
 class TestTradingLoopTick:
+    async def test_tick_activates_kill_switch_on_arena_failure_threshold(self) -> None:
+        loop = TradingLoop(_config(discord_enabled=True))
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(
+            side_effect=ArenaMonitorFailureThresholdError(
+                consecutive_failures=5,
+                max_consecutive_failures=5,
+                urls_attempted=["https://arena.ai/leaderboard", "https://lmarena.ai/leaderboard"],
+            )
+        )  # type: ignore[method-assign]
+
+        assert loop._alerter is not None
+        loop._alerter.send_error_alert = AsyncMock()  # type: ignore[method-assign]
+        loop._alerter.send_system_alert = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.risk_manager is not None
+        assert loop.risk_manager.kill_switch_active is True
+        assert loop.running is False
+        loop._alerter.send_error_alert.assert_called_once()
+        error_call = loop._alerter.send_error_alert.await_args
+        assert error_call.args[0] == "arena_failure_threshold_exceeded"
+        assert "consecutive_failures=5" in error_call.args[1]
+        assert "https://arena.ai/leaderboard" in error_call.args[1]
+
+        await loop.shutdown()
+
+    async def test_tick_blocks_orders_after_arena_failure_threshold_breached(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(
+            side_effect=ArenaMonitorFailureThresholdError(
+                consecutive_failures=5,
+                max_consecutive_failures=5,
+                urls_attempted=["https://arena.ai/leaderboard"],
+            )
+        )  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.risk_manager is not None
+        assert loop.risk_manager.kill_switch_active
+
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
+
+        await loop.shutdown()
+
     async def test_tick_with_no_signals(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
@@ -118,6 +336,55 @@ class TestTradingLoopTick:
 
         await loop._tick()
         assert loop.tick_count == 1
+        await loop.shutdown()
+
+    async def test_tick_refreshes_market_data_even_without_signals(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=48, yes_ask=50, last_price=49, event_ticker="KXTOPMODEL-EV1")
+        )
+
+        assert loop._strategy is not None
+        loop._strategy.on_market_update = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop._market_data_client.get_market.assert_called_once_with("KXTOPMODEL-GPT5")
+        loop._strategy.on_market_update.assert_called_once_with(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "yes_bid": 48,
+                "yes_ask": 50,
+                "last_price": 49,
+                "event_ticker": "KXTOPMODEL-EV1",
+            }
+        )
         await loop.shutdown()
 
     async def test_tick_with_signals_and_proposals(self) -> None:
@@ -138,6 +405,45 @@ class TestTradingLoopTick:
         # Check that execution engine received orders
         assert loop.execution_engine is not None
         assert len(loop.execution_engine.orders) > 0
+        await loop.shutdown()
+
+    async def test_tick_market_refresh_can_change_proposal_outcome(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=88, yes_ask=90, last_price=89)
+        )
+
+        await loop._tick()
+
+        # Strategy fair value for rank_ub=1 is ~65; refreshed ask=90 should suppress buys.
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
 
     async def test_tick_risk_rejection(self) -> None:
@@ -177,6 +483,69 @@ class TestTradingLoopTick:
         loop._strategy.on_signal = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
         await loop._tick()
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 0
+        await loop.shutdown()
+
+    async def test_tick_refreshes_portfolio_before_risk_evaluation(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        snapshot = PortfolioSnapshot(balance_cents=123_456)
+        loop.build_portfolio_snapshot = MagicMock(return_value=snapshot)  # type: ignore[method-assign]
+
+        assert loop._risk is not None
+        loop._risk.update_portfolio = MagicMock(wraps=loop._risk.update_portfolio)  # type: ignore[method-assign]
+        original_evaluate = loop._risk.evaluate
+
+        def _evaluate_with_assert(order: ProposedOrder):
+            loop._risk.update_portfolio.assert_called_once_with(snapshot)
+            assert loop._risk.portfolio is snapshot
+            return original_evaluate(order)
+
+        loop._risk.evaluate = MagicMock(side_effect=_evaluate_with_assert)  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        loop.build_portfolio_snapshot.assert_called_once()
+        loop._risk.update_portfolio.assert_called_once_with(snapshot)
+        assert loop._risk.evaluate.call_count == 1
+        await loop.shutdown()
+
+    async def test_tick_uses_refreshed_snapshot_for_exposure_limits(self) -> None:
+        loop = TradingLoop(_config())
+        await loop.initialize()
+
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        assert loop._strategy is not None
+        loop._strategy.on_signal = AsyncMock(return_value=[_proposal()])  # type: ignore[method-assign]
+
+        assert loop._risk is not None
+        loop._risk.update_portfolio(PortfolioSnapshot(balance_cents=100_000))
+
+        refreshed_snapshot = PortfolioSnapshot(
+            balance_cents=10_000,
+            positions=[
+                PositionInfo(
+                    ticker="KXTOPMODEL-GPT5",
+                    event_ticker="KXTOPMODEL",
+                    quantity=180,
+                    avg_cost_cents=50,
+                )
+            ],
+        )
+        loop.build_portfolio_snapshot = MagicMock(return_value=refreshed_snapshot)  # type: ignore[method-assign]
+
+        await loop._tick()
+
         assert loop.execution_engine is not None
         assert len(loop.execution_engine.orders) == 0
         await loop.shutdown()
@@ -224,9 +593,213 @@ class TestPortfolioSnapshot:
     async def test_build_snapshot_empty(self) -> None:
         loop = TradingLoop(_config())
         await loop.initialize()
-        snap = loop.build_portfolio_snapshot(balance_cents=50000)
-        assert snap.balance_cents == 50000
+        snap = loop.build_portfolio_snapshot()
+        assert snap.balance_cents > 0
         assert len(snap.positions) == 0
+        await loop.shutdown()
+
+    async def test_build_snapshot_preserves_signed_position_quantity(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = -95
+
+        snap = loop.build_portfolio_snapshot()
+
+        assert len(snap.positions) == 1
+        assert snap.positions[0].ticker == "KXTOPMODEL-GPT5"
+        assert snap.positions[0].quantity == -95
+        await loop.shutdown()
+
+    async def test_snapshot_event_map_rejects_multi_contract_same_event(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-GEMINI3",
+                    "title": "Top model",
+                    "subtitle": "Gemini 3",
+                    "yes_bid": 40,
+                    "yes_ask": 42,
+                    "last_price": 41,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-CLAUDE5",
+                    "title": "Top model",
+                    "subtitle": "Claude 5",
+                    "yes_bid": 39,
+                    "yes_ask": 41,
+                    "last_price": 40,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+            ]
+        }
+
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+        assert loop._strategy is not None
+        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 130
+        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 110
+
+        snapshot = loop.build_portfolio_snapshot()
+
+        assert snapshot.ticker_event_map["KXTOPMODEL-CLAUDE5"] == "KXTOPMODEL-EV1"
+        assert loop.risk_manager is not None
+        loop.risk_manager.update_portfolio(snapshot)
+        decision = loop.risk_manager.evaluate(
+            ProposedOrder(
+                strategy="leaderboard_alpha",
+                ticker="KXTOPMODEL-CLAUDE5",
+                side="yes",
+                price_cents=40,
+                quantity=20,
+                urgency=OrderUrgency.PASSIVE,
+            )
+        )
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-EV1" in reason for reason in decision.rejection_reasons)
+        await loop.shutdown()
+
+    async def test_snapshot_event_map_allows_same_series_different_event(self) -> None:
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-GEMINI3",
+                    "title": "Top model",
+                    "subtitle": "Gemini 3",
+                    "yes_bid": 40,
+                    "yes_ask": 42,
+                    "last_price": 41,
+                    "event_ticker": "KXTOPMODEL-EV1",
+                },
+                {
+                    "ticker": "KXTOPMODEL-CLAUDE5",
+                    "title": "Top model",
+                    "subtitle": "Claude 5",
+                    "yes_bid": 39,
+                    "yes_ask": 41,
+                    "last_price": 40,
+                    "event_ticker": "KXTOPMODEL-EV2",
+                },
+            ]
+        }
+
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+        assert loop._strategy is not None
+        loop._strategy._contracts["KXTOPMODEL-GPT5"].position = 140
+        loop._strategy._contracts["KXTOPMODEL-GEMINI3"].position = 90
+
+        snapshot = loop.build_portfolio_snapshot()
+
+        assert snapshot.ticker_event_map["KXTOPMODEL-CLAUDE5"] == "KXTOPMODEL-EV2"
+        assert loop.risk_manager is not None
+        loop.risk_manager.update_portfolio(snapshot)
+        decision = loop.risk_manager.evaluate(
+            ProposedOrder(
+                strategy="leaderboard_alpha",
+                ticker="KXTOPMODEL-CLAUDE5",
+                side="yes",
+                price_cents=40,
+                quantity=20,
+                urgency=OrderUrgency.PASSIVE,
+            )
+        )
+
+        assert decision.approved
+        await loop.shutdown()
+
+    async def test_build_snapshot_includes_persisted_daily_pnl(self) -> None:
+        sf = _session_factory()
+        loop = TradingLoop(_config())
+        await loop.initialize(session_factory=sf)
+
+        assert loop.repository is not None
+        loop.repository.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 5,
+                "price_cents": 40,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-open",
+                "kalshi_fill_id": "fill-open",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+        loop.repository.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "no",
+                "action": "buy",
+                "count": 5,
+                "price_cents": 30,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-close",
+                "kalshi_fill_id": "fill-close",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 1)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        snap = loop.build_portfolio_snapshot()
+
+        assert snap.daily_realized_pnl_cents.get("leaderboard_alpha") == 150
+        assert snap.daily_unrealized_pnl_cents.get("leaderboard_alpha") == 0
         await loop.shutdown()
 
 
@@ -637,10 +1210,10 @@ class TestMarketDiscovery:
 
         await loop.shutdown()
 
-    async def test_api_client_creation_failure_is_graceful(self) -> None:
+    async def test_bootstrap_failure_is_graceful(self) -> None:
         loop = TradingLoop(_config())
-        # Patch _create_api_client to simulate failure
-        with patch.object(TradingLoop, "_create_api_client", return_value=None):
+        # Patch _bootstrap_market_data to simulate API failure
+        with patch.object(TradingLoop, "_bootstrap_market_data", return_value={"markets": []}):
             await loop.initialize()
 
         # Should still start — just with no contracts

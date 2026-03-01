@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from autotrader.signals.arena_types import LeaderboardEntry
+from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
+from autotrader.signals.settlement import resolve_top_model, resolve_top_org
 from autotrader.strategies.base import OrderUrgency, ProposedOrder, Strategy
 from autotrader.utils.fees import FeeCalculator
 from autotrader.utils.matching import fuzzy_match
@@ -33,6 +34,7 @@ class ContractView:
 
     ticker: str
     model_name: str  # Name extracted from Kalshi contract title/subtitle
+    series: str = ""
     yes_bid: int = 0
     yes_ask: int = 0
     last_price: int = 0
@@ -81,6 +83,14 @@ class LeaderboardAlphaStrategy(Strategy):
         self._contracts: dict[str, ContractView] = {}
         # Kalshi ticker → model name (from contract title/subtitle)
         self._ticker_model_names: dict[str, str] = {}
+        # Kalshi ticker → Kalshi event ticker
+        self._ticker_event_map: dict[str, str] = {}
+        # Arena model name → pairwise aggregate metrics
+        self._pairwise: dict[str, PairwiseAggregate] = {}
+        # Arena organization → best leaderboard entry for that org
+        self._org_rankings: dict[str, LeaderboardEntry] = {}
+        # Arena organization → Kalshi ticker
+        self._org_ticker_map: dict[str, str] = {}
 
     # ── Strategy interface ────────────────────────────────────────────
 
@@ -113,9 +123,17 @@ class LeaderboardAlphaStrategy(Strategy):
                 ticker = m.get("ticker", "")
                 model_name = m.get("subtitle", m.get("title", ""))
                 self._ticker_model_names[ticker] = model_name
+                raw_event_ticker = m.get("event_ticker")
+                event_ticker = (
+                    raw_event_ticker
+                    if isinstance(raw_event_ticker, str) and raw_event_ticker
+                    else self._fallback_event_ticker(ticker)
+                )
+                self._ticker_event_map[ticker] = event_ticker
                 self._contracts[ticker] = ContractView(
                     ticker=ticker,
                     model_name=model_name,
+                    series=self._ticker_series(ticker),
                     yes_bid=m.get("yes_bid", 0),
                     yes_ask=m.get("yes_ask", 0),
                     last_price=m.get("last_price", 0),
@@ -125,6 +143,20 @@ class LeaderboardAlphaStrategy(Strategy):
             for ticker, pos in state.get("positions", {}).items():
                 if ticker in self._contracts:
                     self._contracts[ticker].position = pos
+            for model_name, pair in state.get("pairwise", {}).items():
+                if isinstance(pair, dict):
+                    self._pairwise[model_name] = PairwiseAggregate(
+                        model_name=model_name,
+                        total_pairwise_battles=int(pair.get("total_pairwise_battles", 0)),
+                        average_pairwise_win_rate=float(pair.get("average_pairwise_win_rate", 0.0)),
+                    )
+            for org_name, ticker in state.get("org_ticker_map", {}).items():
+                if isinstance(org_name, str) and isinstance(ticker, str):
+                    self._org_ticker_map[org_name] = ticker
+            for ticker, event_ticker in state.get("ticker_event_map", {}).items():
+                if isinstance(ticker, str) and isinstance(event_ticker, str) and event_ticker:
+                    self._ticker_event_map[ticker] = event_ticker
+        self._rebuild_org_rankings()
 
         logger.info("strategy_initialized", strategy=self.name, contracts=len(self._contracts))
 
@@ -138,6 +170,7 @@ class LeaderboardAlphaStrategy(Strategy):
             "new_leader": self._handle_new_leader,
             "score_shift": self._handle_score_shift,
             "new_model": self._handle_new_model,
+            "pairwise_shift": self._handle_pairwise_shift,
         }.get(signal.event_type)
 
         if handler is None:
@@ -160,8 +193,12 @@ class LeaderboardAlphaStrategy(Strategy):
         if isinstance(data, dict) and data.get("ticker") in self._contracts:
             c = self._contracts[data["ticker"]]
             for key in ("yes_bid", "yes_ask", "last_price"):
-                if key in data:
-                    setattr(c, key, data[key])
+                value = data.get(key)
+                if isinstance(value, int) and value > 0:
+                    setattr(c, key, value)
+            event_ticker = data.get("event_ticker")
+            if isinstance(event_ticker, str) and event_ticker:
+                self._ticker_event_map[data["ticker"]] = event_ticker
         return []
 
     async def on_fill(self, fill_data: Any) -> None:
@@ -197,6 +234,15 @@ class LeaderboardAlphaStrategy(Strategy):
             },
             "positions": {t: c.position for t, c in self._contracts.items() if c.position != 0},
             "model_ticker_map": dict(self._model_ticker_map),
+            "org_ticker_map": dict(self._org_ticker_map),
+            "ticker_event_map": dict(self._ticker_event_map),
+            "pairwise": {
+                m: {
+                    "total_pairwise_battles": p.total_pairwise_battles,
+                    "average_pairwise_win_rate": p.average_pairwise_win_rate,
+                }
+                for m, p in self._pairwise.items()
+            },
         }
 
     async def teardown(self) -> None:
@@ -213,6 +259,27 @@ class LeaderboardAlphaStrategy(Strategy):
         if entry is None:
             return None
         prob = rank_to_probability(entry.rank_ub)
+        if self._has_complete_tiebreak_inputs():
+            winner = resolve_top_model(list(self._rankings.values()))
+            if winner and winner.model_name == model_name:
+                prob = min(0.95, prob + 0.05)
+        pairwise = self._pairwise.get(model_name)
+        if pairwise and pairwise.total_pairwise_battles > 0:
+            pairwise_edge = pairwise.average_pairwise_win_rate - 0.5
+            prob = max(0.0, min(1.0, prob + 0.15 * pairwise_edge))
+        if entry.is_preliminary:
+            prob *= 1.0 - self._config.preliminary_model_discount
+        return max(1, min(99, round(prob * 100)))
+
+    def estimate_org_fair_value(self, organization: str) -> int | None:
+        """Estimate fair value (cents) for an organization's KXLLM1 contract."""
+        entry = self._org_rankings.get(organization)
+        if entry is None:
+            return None
+        prob = rank_to_probability(entry.rank_ub)
+        winner = resolve_top_org(list(self._rankings.values()))
+        if winner and winner == organization:
+            prob = min(0.95, prob + 0.05)
         if entry.is_preliminary:
             prob *= 1.0 - self._config.preliminary_model_discount
         return max(1, min(99, round(prob * 100)))
@@ -227,17 +294,20 @@ class LeaderboardAlphaStrategy(Strategy):
 
         self._update_ranking(model_name, data)
 
-        ticker = self._resolve_ticker(model_name)
-        if ticker is None:
-            return []
+        model_ticker = self._resolve_ticker(model_name, series="KXTOPMODEL")
+        org_name = self._rankings.get(model_name, LeaderboardEntry(model_name=model_name)).organization
+        org_ticker = self._resolve_ticker(org_name, series="KXLLM1") if org_name else None
 
-        fair_value = self.estimate_fair_value(model_name)
-        contract = self._contracts.get(ticker)
-        if fair_value is None or contract is None:
-            return []
-
-        market_price = contract.yes_ask or contract.last_price
-        if market_price <= 0 or market_price >= 100:
+        targets: list[tuple[str, int]] = []
+        if model_ticker:
+            fair_value = self.estimate_fair_value(model_name)
+            if fair_value is not None:
+                targets.append((model_ticker, fair_value))
+        if org_ticker:
+            org_fair_value = self.estimate_org_fair_value(org_name)
+            if org_fair_value is not None:
+                targets.append((org_ticker, org_fair_value))
+        if not targets:
             return []
 
         rank_delta = abs(old_rank_ub - new_rank_ub)
@@ -249,34 +319,44 @@ class LeaderboardAlphaStrategy(Strategy):
             else OrderUrgency.PASSIVE
         )
 
-        edge = fair_value - market_price
-        if edge > 0:
-            return self._propose_buy(
-                ticker,
-                contract,
-                fair_value,
-                market_price,
-                urgency,
-                f"rank_ub {old_rank_ub}->{new_rank_ub}, fv={fair_value}c mkt={market_price}c",
-            )
-
-        # If overpriced and we're long, propose selling via NO side
-        if edge < 0 and contract.position > 0:
-            sell_price = contract.yes_bid or contract.last_price
-            if 0 < sell_price < 100:
-                sell_qty = min(contract.position, int(self._config.max_position_per_contract))
-                return [
-                    ProposedOrder(
-                        strategy=self.name,
-                        ticker=ticker,
-                        side="no",
-                        price_cents=100 - sell_price,
-                        quantity=sell_qty,
-                        urgency=urgency,
-                        rationale=(f"rank_ub {old_rank_ub}->{new_rank_ub}, overpriced by {-edge}c, reducing position"),
+        orders: list[ProposedOrder] = []
+        for ticker, fair_value in targets:
+            contract = self._contracts.get(ticker)
+            if contract is None:
+                continue
+            market_price = contract.yes_ask or contract.last_price
+            if market_price <= 0 or market_price >= 100:
+                continue
+            edge = fair_value - market_price
+            if edge > 0:
+                orders.extend(
+                    self._propose_buy(
+                        ticker,
+                        contract,
+                        fair_value,
+                        market_price,
+                        urgency,
+                        f"rank_ub {old_rank_ub}->{new_rank_ub}, fv={fair_value}c mkt={market_price}c",
                     )
-                ]
-        return []
+                )
+            elif edge < 0 and contract.position > 0:
+                sell_price = contract.yes_bid or contract.last_price
+                if 0 < sell_price < 100:
+                    sell_qty = min(contract.position, int(self._config.max_position_per_contract))
+                    orders.append(
+                        ProposedOrder(
+                            strategy=self.name,
+                            ticker=ticker,
+                            side="no",
+                            price_cents=100 - sell_price,
+                            quantity=sell_qty,
+                            urgency=urgency,
+                            rationale=(
+                                f"rank_ub {old_rank_ub}->{new_rank_ub}, overpriced by {-edge}c, reducing position"
+                            ),
+                        )
+                    )
+        return orders
 
     def _handle_new_leader(self, signal: Signal) -> list[ProposedOrder]:
         data = signal.data
@@ -288,8 +368,8 @@ class LeaderboardAlphaStrategy(Strategy):
         if new_leader and new_leader not in self._rankings:
             self._rankings[new_leader] = LeaderboardEntry(model_name=new_leader, rank_ub=1)
 
-        # Buy new leader
-        new_ticker = self._resolve_ticker(new_leader)
+        # Buy new leader model on KXTOPMODEL.
+        new_ticker = self._resolve_ticker(new_leader, series="KXTOPMODEL")
         if new_ticker:
             contract = self._contracts.get(new_ticker)
             if contract:
@@ -308,7 +388,7 @@ class LeaderboardAlphaStrategy(Strategy):
                     )
 
         # Sell previous leader if we hold YES
-        prev_ticker = self._resolve_ticker(previous_leader)
+        prev_ticker = self._resolve_ticker(previous_leader, series="KXTOPMODEL")
         if prev_ticker:
             prev_contract = self._contracts.get(prev_ticker)
             if prev_contract and prev_contract.position > 0:
@@ -326,6 +406,54 @@ class LeaderboardAlphaStrategy(Strategy):
                             rationale=f"lost #1 to {new_leader}, reducing position",
                         )
                     )
+        # Also trade organization leader on KXLLM1 contracts.
+        new_org = (
+            data.get("new_organization")
+            or data.get("new_top_org")
+            or self._rankings.get(new_leader, LeaderboardEntry(model_name="")).organization
+        )
+        prev_org = (
+            data.get("previous_organization")
+            or self._rankings.get(previous_leader, LeaderboardEntry(model_name="")).organization
+        )
+
+        if isinstance(new_org, str) and new_org:
+            org_ticker = self._resolve_ticker(new_org, series="KXLLM1")
+            org_contract = self._contracts.get(org_ticker) if org_ticker else None
+            rank1_org_fv = max(1, min(99, round(rank_to_probability(1) * 100)))
+            estimated_org_fv = self.estimate_org_fair_value(new_org)
+            org_fv = max(rank1_org_fv, estimated_org_fv or 0)
+            if org_ticker and org_contract and org_fv > 0:
+                market_price = org_contract.yes_ask or org_contract.last_price
+                if 0 < market_price < 100:
+                    orders.extend(
+                        self._propose_buy(
+                            org_ticker,
+                            org_contract,
+                            org_fv,
+                            market_price,
+                            OrderUrgency.AGGRESSIVE,
+                            f"new #1 org: {new_org}, fv={org_fv}c mkt={market_price}c",
+                        )
+                    )
+        if isinstance(prev_org, str) and prev_org:
+            prev_org_ticker = self._resolve_ticker(prev_org, series="KXLLM1")
+            prev_org_contract = self._contracts.get(prev_org_ticker) if prev_org_ticker else None
+            if prev_org_ticker and prev_org_contract and prev_org_contract.position > 0:
+                sell_price = prev_org_contract.yes_bid or prev_org_contract.last_price
+                if 0 < sell_price < 100:
+                    sell_qty = min(prev_org_contract.position, int(self._config.max_position_per_contract))
+                    orders.append(
+                        ProposedOrder(
+                            strategy=self.name,
+                            ticker=prev_org_ticker,
+                            side="no",
+                            price_cents=100 - sell_price,
+                            quantity=sell_qty,
+                            urgency=OrderUrgency.AGGRESSIVE,
+                            rationale=f"org lost #1 to {new_org}, reducing position",
+                        )
+                    )
         return orders
 
     def _handle_score_shift(self, signal: Signal) -> list[ProposedOrder]:
@@ -341,27 +469,44 @@ class LeaderboardAlphaStrategy(Strategy):
         if score_delta <= 0:
             return []
 
-        ticker = self._resolve_ticker(model_name)
-        if ticker is None:
-            return []
+        orders: list[ProposedOrder] = []
+        model_ticker = self._resolve_ticker(model_name, series="KXTOPMODEL")
+        if model_ticker:
+            fair_value = self.estimate_fair_value(model_name)
+            contract = self._contracts.get(model_ticker)
+            if fair_value is not None and contract is not None:
+                market_price = contract.yes_ask or contract.last_price
+                if 0 < market_price < 100:
+                    orders.extend(
+                        self._propose_buy(
+                            model_ticker,
+                            contract,
+                            fair_value,
+                            market_price,
+                            OrderUrgency.ADAPTIVE,
+                            f"score +{score_delta:.1f}, fv={fair_value}c mkt={market_price}c",
+                        )
+                    )
 
-        fair_value = self.estimate_fair_value(model_name)
-        contract = self._contracts.get(ticker)
-        if fair_value is None or contract is None:
-            return []
-
-        market_price = contract.yes_ask or contract.last_price
-        if market_price <= 0 or market_price >= 100:
-            return []
-
-        return self._propose_buy(
-            ticker,
-            contract,
-            fair_value,
-            market_price,
-            OrderUrgency.ADAPTIVE,
-            f"score +{score_delta:.1f}, fv={fair_value}c mkt={market_price}c",
-        )
+        org_name = self._rankings.get(model_name, LeaderboardEntry(model_name=model_name)).organization
+        org_ticker = self._resolve_ticker(org_name, series="KXLLM1") if org_name else None
+        if org_ticker:
+            org_fv = self.estimate_org_fair_value(org_name)
+            org_contract = self._contracts.get(org_ticker)
+            if org_fv is not None and org_contract is not None:
+                market_price = org_contract.yes_ask or org_contract.last_price
+                if 0 < market_price < 100:
+                    orders.extend(
+                        self._propose_buy(
+                            org_ticker,
+                            org_contract,
+                            org_fv,
+                            market_price,
+                            OrderUrgency.ADAPTIVE,
+                            f"score +{score_delta:.1f} for {org_name}, fv={org_fv}c mkt={market_price}c",
+                        )
+                    )
+        return orders
 
     def _handle_new_model(self, signal: Signal) -> list[ProposedOrder]:
         data = signal.data
@@ -376,13 +521,15 @@ class LeaderboardAlphaStrategy(Strategy):
             score=data.get("score", 0.0),
             votes=data.get("votes", 0),
             is_preliminary=data.get("is_preliminary", False),
+            release_date=data.get("release_date", ""),
         )
+        self._rebuild_org_rankings()
 
         # Only trade if competitively ranked
         if rank_ub > 5 or rank_ub <= 0:
             return []
 
-        ticker = self._resolve_ticker(model_name)
+        ticker = self._resolve_ticker(model_name, series="KXTOPMODEL")
         if ticker is None:
             return []
 
@@ -405,14 +552,52 @@ class LeaderboardAlphaStrategy(Strategy):
             f"new model {model_name} rank_ub={rank_ub}, fv={fair_value}c mkt={market_price}c",
         )
 
+    def _handle_pairwise_shift(self, signal: Signal) -> list[ProposedOrder]:
+        data = signal.data
+        model_name = data.get("model_name", "")
+        new_avg = float(data.get("new_average_pairwise_win_rate", 0.0))
+        new_battles = int(data.get("new_total_pairwise_battles", 0))
+        self._pairwise[model_name] = PairwiseAggregate(
+            model_name=model_name,
+            total_pairwise_battles=new_battles,
+            average_pairwise_win_rate=new_avg,
+        )
+        if new_battles < 2000 or new_avg <= 0.52:
+            return []
+
+        ticker = self._resolve_ticker(model_name, series="KXTOPMODEL")
+        if ticker is None:
+            return []
+        fair_value = self.estimate_fair_value(model_name)
+        contract = self._contracts.get(ticker)
+        if fair_value is None or contract is None:
+            return []
+        market_price = contract.yes_ask or contract.last_price
+        if market_price <= 0 or market_price >= 100:
+            return []
+        return self._propose_buy(
+            ticker,
+            contract,
+            fair_value,
+            market_price,
+            OrderUrgency.ADAPTIVE,
+            f"pairwise win={new_avg:.3f} battles={new_battles}, fv={fair_value}c mkt={market_price}c",
+        )
+
     # ── Helpers ───────────────────────────────────────────────────────
+
+    def _has_complete_tiebreak_inputs(self) -> bool:
+        """Return True when settlement tie-break fields are present for all tracked models."""
+        if len(self._rankings) < 2:
+            return False
+        return all(e.votes > 0 and bool(e.release_date) for e in self._rankings.values())
 
     def _update_ranking(self, model_name: str, data: dict[str, Any]) -> None:
         """Update internal ranking from signal data."""
         old = self._rankings.get(model_name)
         self._rankings[model_name] = LeaderboardEntry(
             model_name=model_name,
-            organization=old.organization if old else "",
+            organization=data.get("organization", old.organization if old else ""),
             rank=data.get("new_rank", data.get("rank", old.rank if old else 0)),
             rank_ub=data.get("new_rank_ub", data.get("rank_ub", old.rank_ub if old else 0)),
             rank_lb=old.rank_lb if old else 0,
@@ -421,18 +606,38 @@ class LeaderboardAlphaStrategy(Strategy):
             ci_upper=old.ci_upper if old else 0.0,
             votes=data.get("votes", old.votes if old else 0),
             is_preliminary=data.get("is_preliminary", old.is_preliminary if old else False),
+            release_date=data.get("release_date", old.release_date if old else ""),
         )
+        self._rebuild_org_rankings()
 
-    def _resolve_ticker(self, model_name: str) -> str | None:
-        """Resolve an Arena model name to a Kalshi ticker via fuzzy matching."""
+    def _resolve_ticker(self, model_name: str, series: str | None = None) -> str | None:
+        """Resolve an Arena name to a Kalshi ticker via fuzzy matching."""
         if not model_name:
             return None
-        if model_name in self._model_ticker_map:
-            return self._model_ticker_map[model_name]
+
+        if series == "KXLLM1":
+            if model_name in self._org_ticker_map:
+                return self._org_ticker_map[model_name]
+        elif series == "KXTOPMODEL":
+            if model_name in self._model_ticker_map:
+                return self._model_ticker_map[model_name]
+        else:
+            if model_name in self._model_ticker_map:
+                return self._model_ticker_map[model_name]
+            if model_name in self._org_ticker_map:
+                return self._org_ticker_map[model_name]
+
         if not self._ticker_model_names:
             return None
 
-        candidates = list(self._ticker_model_names.values())
+        if series is None:
+            scoped = dict(self._ticker_model_names)
+        else:
+            scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
+        if not scoped:
+            return None
+
+        candidates = list(scoped.values())
         match = fuzzy_match(
             model_name,
             candidates,
@@ -442,17 +647,44 @@ class LeaderboardAlphaStrategy(Strategy):
         if match is None:
             return None
 
-        for ticker, name in self._ticker_model_names.items():
+        for ticker, name in scoped.items():
             if name == match.matched:
-                self._model_ticker_map[model_name] = ticker
+                cache = self._org_ticker_map if self._ticker_series(ticker) == "KXLLM1" else self._model_ticker_map
+                cache[model_name] = ticker
                 logger.info(
                     "model_ticker_mapped",
                     model=model_name,
                     ticker=ticker,
+                    series=series,
                     score=match.score,
                 )
                 return ticker
         return None
+
+    def _rebuild_org_rankings(self) -> None:
+        """Build org-level standings from tracked model-level rankings."""
+        by_org: dict[str, list[LeaderboardEntry]] = {}
+        for entry in self._rankings.values():
+            if not entry.organization:
+                continue
+            by_org.setdefault(entry.organization, []).append(entry)
+
+        self._org_rankings = {
+            org: min(
+                entries,
+                key=lambda e: (
+                    e.rank_ub if e.rank_ub > 0 else 10_000,
+                    -e.score,
+                    -e.votes,
+                    e.release_date or "9999-12-31",
+                    e.model_name,
+                ),
+            )
+            for org, entries in by_org.items()
+        }
+
+    def _ticker_series(self, ticker: str) -> str:
+        return ticker.split("-", 1)[0] if ticker else ""
 
     def _propose_buy(
         self,
@@ -515,6 +747,15 @@ class LeaderboardAlphaStrategy(Strategy):
     def model_ticker_map(self) -> dict[str, str]:
         return dict(self._model_ticker_map)
 
+    def resolve_event_ticker(self, ticker: str) -> str:
+        """Resolve the event ticker for a contract ticker."""
+        return self._ticker_event_map.get(ticker, self._fallback_event_ticker(ticker))
+
+    def _fallback_event_ticker(self, ticker: str) -> str:
+        """Fallback event derivation for payloads missing event_ticker."""
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
+
     def set_rankings(self, rankings: dict[str, LeaderboardEntry]) -> None:
         """Set the leaderboard rankings (for initialization / testing)."""
         self._rankings = dict(rankings)
+        self._rebuild_org_rankings()

@@ -41,10 +41,18 @@ def run(config_dir: str, environment: str | None) -> None:
     from autotrader.monitoring.logging import get_logger
 
     log = get_logger("autotrader.main")
+    effective_environment = config.kalshi.environment.value
+    effective_base_url = config.kalshi.base_url
+
     log.info(
         "autotrader_starting",
         version=__version__,
-        environment=config.kalshi.environment.value,
+        environment=effective_environment,
+    )
+    log.info(
+        "runtime_mode_resolved",
+        mode=effective_environment,
+        api_base_url=effective_base_url,
     )
 
     # Initialize database
@@ -54,7 +62,8 @@ def run(config_dir: str, environment: str | None) -> None:
     log.info("database_initialized", url=config.database.url)
 
     click.echo(f"Kalshi Autotrader v{__version__}")
-    click.echo(f"Environment: {config.kalshi.environment.value}")
+    click.echo(f"Environment: {effective_environment}")
+    click.echo(f"Kalshi API base URL: {effective_base_url}")
     click.echo(f"Database: {config.database.url}")
 
     async def _run() -> None:

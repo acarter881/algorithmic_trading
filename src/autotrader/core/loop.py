@@ -16,15 +16,16 @@ and supports graceful shutdown via :meth:`stop`.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from autotrader.api.client import KalshiAPIClient, KalshiAPIError, MarketInfo
+from autotrader.api.client import KalshiAPIClient, MarketInfo
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
-from autotrader.signals.arena_monitor import ArenaMonitor
+from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.state.repository import TradingRepository
 from autotrader.strategies.leaderboard_alpha import LeaderboardAlphaStrategy
 from autotrader.utils.fees import FeeCalculator
@@ -62,7 +63,9 @@ class TradingLoop:
         self._repo: TradingRepository | None = None
         self._alerter: DiscordAlerter | None = None
         self._api_client: KalshiAPIClient | None = None
+        self._market_data_client: KalshiAPIClient | None = None
         self._fee_calc = FeeCalculator()
+        self._ticker_event_map: dict[str, str] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -87,10 +90,9 @@ class TradingLoop:
         self._monitor = ArenaMonitor(config=self._config.arena_monitor)
         await self._monitor.initialize()
 
-        # Kalshi API client — used for market discovery and live execution
+        # Kalshi API client — used for market discovery and live execution.
+        # When injected (e.g. in tests), it is used directly for discovery.
         self._api_client = api_client
-        if self._api_client is None:
-            self._api_client = self._create_api_client()
 
         # Auto-discover markets when none are provided
         if market_data is None and self._api_client is not None:
@@ -101,29 +103,56 @@ class TradingLoop:
             config=self._config.leaderboard_alpha,
             fee_calculator=self._fee_calc,
         )
-        await self._strategy.initialize(market_data or {}, None)
+        is_paper_mode = self._config.kalshi.environment.value != "production"
+
+        # Database repository (optional — gracefully degrades if not provided)
+        state_payload: dict[str, Any] | None = None
+        if session_factory is not None:
+            self._repo = TradingRepository(session_factory)
+            state_payload = {
+                "positions": self._repo.get_net_positions_by_ticker(self._strategy.name, is_paper=is_paper_mode),
+            }
+
+        if market_data is None:
+            market_data = self._bootstrap_market_data()
+        self._ticker_event_map = self._extract_ticker_event_map(market_data)
+        if state_payload is None:
+            state_payload = {}
+        state_payload["ticker_event_map"] = dict(self._ticker_event_map)
+        await self._strategy.initialize(market_data, state_payload)
+
+        # Discord alerter (initialized early so startup validation can alert)
+        self._alerter = DiscordAlerter(self._config.discord)
+        await self._alerter.initialize()
+
+        await self._validate_startup_markets(is_paper_mode=is_paper_mode)
+
+        # Market data refresh client (runtime quote updates for tracked tickers)
+        self._market_data_client = KalshiAPIClient(self._config.kalshi)
+        try:
+            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+            self._market_data_client.connect(private_key_pem=private_key_pem)
+        except Exception:
+            logger.exception("market_data_client_init_failed")
+            self._market_data_client = None
 
         # Risk manager
         self._risk = RiskManager(config=self._config.risk)
 
-        # Execution engine — pass API client in live mode
-        mode = ExecutionMode.LIVE if self._config.kalshi.environment.value == "production" else ExecutionMode.PAPER
-        self._engine = ExecutionEngine(
-            mode=mode,
-            fee_calculator=self._fee_calc,
-            api_client=self._api_client if mode == ExecutionMode.LIVE else None,
-        )
+        # Execution engine
+        mode = ExecutionMode.PAPER if is_paper_mode else ExecutionMode.LIVE
+        if mode == ExecutionMode.LIVE:
+            live_client = self._api_client
+            if live_client is None:
+                live_client = KalshiAPIClient(self._config.kalshi)
+                private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+                live_client.connect(private_key_pem=private_key_pem)
+            self._engine = ExecutionEngine(mode=mode, api_client=live_client, fee_calculator=self._fee_calc)
+        else:
+            self._engine = ExecutionEngine(mode=mode, fee_calculator=self._fee_calc)
 
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)
-
-        # Database repository (optional — gracefully degrades if not provided)
-        if session_factory is not None:
-            self._repo = TradingRepository(session_factory)
-
-        # Discord alerter
-        self._alerter = DiscordAlerter(self._config.discord)
-        await self._alerter.initialize()
 
         logger.info(
             "trading_loop_initialized",
@@ -149,6 +178,93 @@ class TradingLoop:
             "info",
         )
         await self._send_system_alert("Autotrader Started", f"Mode: {mode.value}")
+
+    async def _validate_startup_markets(self, *, is_paper_mode: bool) -> None:
+        """Validate that configured target series have at least one tradable contract."""
+        if self._strategy is None:
+            return
+
+        expected_series = list(self._config.leaderboard_alpha.target_series)
+        loaded_contracts = self._strategy.contracts
+
+        series_market_counts = {
+            series: sum(1 for ticker in loaded_contracts if ticker.startswith(f"{series}-"))
+            for series in expected_series
+        }
+        missing_series = [series for series, count in series_market_counts.items() if count < 1]
+        if not missing_series:
+            return
+
+        mode = "paper" if is_paper_mode else "production"
+        details = {
+            "mode": mode,
+            "expected_series": expected_series,
+            "series_market_counts": series_market_counts,
+            "loaded_contracts": len(loaded_contracts),
+            "missing_series": missing_series,
+        }
+        logger.error("no_tradable_markets_loaded", **details)
+        self._persist_system_event("no_tradable_markets_loaded", details, severity="critical")
+
+        message = (
+            f"Expected at least one open market per configured series. Missing series: {', '.join(missing_series)}"
+        )
+        if not is_paper_mode:
+            raise RuntimeError(f"no_tradable_markets_loaded: {message}")
+
+        # Paper mode degrades gracefully but emits repeated high-severity alerts.
+        for _ in range(3):
+            await self._send_error_alert("no_tradable_markets_loaded", message)
+            await self._send_system_alert("CRITICAL: no_tradable_markets_loaded", message)
+
+    def _bootstrap_market_data(self) -> dict[str, Any]:
+        """Discover active markets for configured target series at startup."""
+        client = KalshiAPIClient(self._config.kalshi)
+        markets: list[MarketInfo] = []
+
+        try:
+            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+            client.connect(private_key_pem=private_key_pem)
+
+            for series_ticker in self._config.leaderboard_alpha.target_series:
+                cursor: str | None = None
+                while True:
+                    series_markets, cursor = client.get_markets(
+                        series_ticker=series_ticker,
+                        status="open",
+                        limit=200,
+                        cursor=cursor,
+                    )
+                    markets.extend(series_markets)
+                    if not cursor or not series_markets:
+                        break
+
+            logger.info(
+                "market_data_bootstrapped",
+                series=self._config.leaderboard_alpha.target_series,
+                markets=len(markets),
+            )
+        except Exception:
+            logger.exception(
+                "market_data_bootstrap_failed",
+                series=self._config.leaderboard_alpha.target_series,
+            )
+            return {"markets": []}
+
+        return {
+            "markets": [
+                {
+                    "ticker": market.ticker,
+                    "title": market.title,
+                    "subtitle": market.subtitle,
+                    "yes_bid": market.yes_bid,
+                    "yes_ask": market.yes_ask,
+                    "last_price": market.last_price,
+                    "event_ticker": market.event_ticker,
+                }
+                for market in markets
+            ]
+        }
 
     async def run(self) -> None:
         """Start the poll loop.  Blocks until :meth:`stop` is called."""
@@ -212,22 +328,6 @@ class TradingLoop:
         return self._alerter
 
     # ── Market discovery ────────────────────────────────────────────────
-
-    def _create_api_client(self) -> KalshiAPIClient | None:
-        """Create and connect a :class:`KalshiAPIClient`.
-
-        Returns ``None`` if connection fails (e.g. missing credentials).
-        """
-        try:
-            client = KalshiAPIClient(self._config.kalshi)
-            client.connect()
-            return client
-        except Exception:
-            logger.warning(
-                "api_client_creation_failed",
-                hint="Market discovery skipped — check API credentials",
-            )
-            return None
 
     def _discover_markets(self, api: KalshiAPIClient) -> dict[str, Any]:
         """Discover open markets for every series in ``target_series``.
@@ -293,8 +393,16 @@ class TradingLoop:
         assert self._risk is not None
         assert self._engine is not None
 
+        # 0. Refresh tracked market quotes every tick so strategy uses current prices.
+        await self._refresh_market_data()
+
         # 1. Poll for signals
-        signals = await self._monitor.poll()
+        try:
+            signals = await self._monitor.poll()
+        except ArenaMonitorFailureThresholdError as failure:
+            await self._handle_arena_monitor_failure_threshold(failure)
+            return
+
         if not signals:
             logger.debug("tick_no_signals", tick=self._tick_count)
             return
@@ -326,6 +434,10 @@ class TradingLoop:
             count=len(all_proposals),
             tickers=[p.ticker for p in all_proposals],
         )
+
+        # Refresh portfolio state before evaluating this tick's proposals.
+        snapshot = self.build_portfolio_snapshot()
+        self._risk.update_portfolio(snapshot)
 
         # 3. Risk-check each proposal
         approved: list[ProposedOrder] = []
@@ -387,6 +499,63 @@ class TradingLoop:
                     f"Ticker: {result.order.ticker}, Error: {result.error}",
                 )
 
+    async def _handle_arena_monitor_failure_threshold(
+        self,
+        failure: ArenaMonitorFailureThresholdError,
+    ) -> None:
+        """Protective response when Arena monitor repeatedly fails."""
+        details = {
+            "consecutive_failures": failure.consecutive_failures,
+            "max_consecutive_failures": failure.max_consecutive_failures,
+            "urls_attempted": failure.urls_attempted,
+            "tick": self._tick_count,
+        }
+
+        logger.critical("arena_failure_threshold_triggered", **details)
+
+        if self._risk:
+            self._risk.activate_kill_switch(
+                reason=(
+                    "Arena monitor failure threshold exceeded: "
+                    f"{failure.consecutive_failures}/{failure.max_consecutive_failures}; "
+                    f"urls={failure.urls_attempted}"
+                )
+            )
+
+        self.stop()
+        self._persist_system_event("arena_failure_threshold_exceeded", details, severity="critical")
+
+        message = (
+            "Arena monitor failed consecutively and triggered protective shutdown. "
+            f"consecutive_failures={failure.consecutive_failures}, "
+            f"max_consecutive_failures={failure.max_consecutive_failures}, "
+            f"urls_attempted={failure.urls_attempted}"
+        )
+        await self._send_error_alert("arena_failure_threshold_exceeded", message)
+        await self._send_system_alert("CRITICAL: Arena monitor failure threshold exceeded", message)
+
+    async def _refresh_market_data(self) -> None:
+        """Refresh quotes for all strategy-tracked tickers and route into strategy."""
+        if self._strategy is None or self._market_data_client is None:
+            return
+
+        for ticker in self._strategy.contracts:
+            try:
+                market = self._market_data_client.get_market(ticker)
+                await self._strategy.on_market_update(
+                    {
+                        "ticker": ticker,
+                        "yes_bid": market.yes_bid,
+                        "yes_ask": market.yes_ask,
+                        "last_price": market.last_price,
+                        "event_ticker": market.event_ticker,
+                    }
+                )
+                if market.event_ticker:
+                    self._ticker_event_map[ticker] = market.event_ticker
+            except Exception:
+                logger.warning("market_data_refresh_failed", ticker=ticker, tick=self._tick_count)
+
     # ── Fill callback ─────────────────────────────────────────────────
 
     def _on_fill(self, fill_data: dict[str, Any]) -> None:
@@ -411,12 +580,13 @@ class TradingLoop:
 
     # ── Portfolio snapshot (for risk manager refresh) ─────────────────
 
-    def build_portfolio_snapshot(self, balance_cents: int = 0) -> PortfolioSnapshot:
+    def build_portfolio_snapshot(self) -> PortfolioSnapshot:
         """Build a portfolio snapshot from the strategy's current state.
 
-        In a full production system this would query the database and API.
-        For now it uses the strategy's internal contract views.
+        Uses exchange/account balance when available, strategy-tracked positions,
+        and persisted daily P&L from the repository (if configured).
         """
+        balance_cents = self._current_balance_cents()
         positions: list[PositionInfo] = []
         if self._strategy:
             for ticker, contract in self._strategy.contracts.items():
@@ -424,12 +594,70 @@ class TradingLoop:
                     positions.append(
                         PositionInfo(
                             ticker=ticker,
-                            event_ticker=ticker.rsplit("-", 1)[0] if "-" in ticker else ticker,
-                            quantity=abs(contract.position),
+                            event_ticker=self._resolve_event_ticker(ticker),
+                            quantity=contract.position,
                             avg_cost_cents=float(contract.last_price or contract.yes_ask),
                         )
                     )
-        return PortfolioSnapshot(balance_cents=balance_cents, positions=positions)
+
+        daily_realized: dict[str, int] = {}
+        daily_unrealized: dict[str, int] = {}
+        if self._repo and self._strategy:
+            pnl = self._repo.get_daily_pnl(self._strategy.name)
+            if pnl is not None:
+                daily_realized[self._strategy.name] = pnl.realized_pnl_cents
+                daily_unrealized[self._strategy.name] = pnl.unrealized_pnl_cents
+
+        return PortfolioSnapshot(
+            balance_cents=balance_cents,
+            positions=positions,
+            daily_realized_pnl_cents=daily_realized,
+            daily_unrealized_pnl_cents=daily_unrealized,
+            ticker_event_map=dict(self._ticker_event_map),
+        )
+
+    def _extract_ticker_event_map(self, market_data: dict[str, Any]) -> dict[str, str]:
+        """Build a ticker → event_ticker map from market payloads."""
+        ticker_event_map: dict[str, str] = {}
+        for market in market_data.get("markets", []):
+            if not isinstance(market, dict):
+                continue
+            ticker = market.get("ticker")
+            event_ticker = market.get("event_ticker")
+            if isinstance(ticker, str) and ticker and isinstance(event_ticker, str) and event_ticker:
+                ticker_event_map[ticker] = event_ticker
+        return ticker_event_map
+
+    def _resolve_event_ticker(self, ticker: str) -> str:
+        """Resolve event ticker using in-memory map or strategy metadata."""
+        mapped = self._ticker_event_map.get(ticker)
+        if mapped:
+            return mapped
+        if self._strategy is not None:
+            resolved = self._strategy.resolve_event_ticker(ticker)
+            if resolved:
+                self._ticker_event_map[ticker] = resolved
+                return resolved
+        return ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
+
+    def _current_balance_cents(self) -> int:
+        """Best-effort account balance lookup.
+
+        Live mode uses the exchange API. Paper mode falls back to a configurable
+        notional account balance.
+        """
+        if self._engine and self._engine.mode == ExecutionMode.LIVE and self._engine._api is not None:
+            try:
+                return self._engine._api.get_balance().balance
+            except Exception:
+                logger.warning("balance_fetch_failed", tick=self._tick_count)
+                return 0
+
+        try:
+            return int(os.environ.get("AUTOTRADER_PAPER_BALANCE_CENTS", "100000"))
+        except ValueError:
+            logger.warning("invalid_paper_balance_env", value=os.environ.get("AUTOTRADER_PAPER_BALANCE_CENTS"))
+            return 100_000
 
     # ── Persistence helpers ───────────────────────────────────────────
 

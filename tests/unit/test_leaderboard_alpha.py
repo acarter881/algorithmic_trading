@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING
 
+import pytest
+
 from autotrader.config.models import LeaderboardAlphaConfig
 from autotrader.signals.arena_types import LeaderboardEntry
 from autotrader.signals.base import Signal, SignalUrgency
@@ -49,6 +51,7 @@ def _entry(
     votes: int = 10000,
     is_preliminary: bool = False,
     organization: str = "OpenAI",
+    release_date: str = "",
 ) -> LeaderboardEntry:
     return LeaderboardEntry(
         model_name=name,
@@ -58,6 +61,7 @@ def _entry(
         score=score,
         votes=votes,
         is_preliminary=is_preliminary,
+        release_date=release_date,
     )
 
 
@@ -75,6 +79,18 @@ def _signal(
         relevant_series=["KXTOPMODEL"],
         urgency=urgency,
     )
+
+
+@pytest.fixture
+def org_market_data() -> dict[str, object]:
+    return {
+        "markets": [
+            {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 55, "yes_ask": 58, "last_price": 56},
+            {"ticker": "KXTOPMODEL-GEMINI3", "subtitle": "Gemini 3", "yes_bid": 18, "yes_ask": 22, "last_price": 20},
+            {"ticker": "KXLLM1-OPENAI", "subtitle": "OpenAI", "yes_bid": 42, "yes_ask": 46, "last_price": 44},
+            {"ticker": "KXLLM1-GOOGLE", "subtitle": "Google", "yes_bid": 30, "yes_ask": 34, "last_price": 32},
+        ]
+    }
 
 
 MARKET_DATA = {
@@ -377,6 +393,30 @@ class TestRankingChange:
         orders = await s.on_signal(signal)
         assert orders == []
 
+    async def test_equal_edge_does_not_generate_sell(self) -> None:
+        s = _strategy()
+        data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 20, "yes_ask": 22, "last_price": 21},
+            ]
+        }
+        await s.initialize(data, {"positions": {"KXTOPMODEL-GPT5": 5}})
+        s.set_rankings({"GPT-5": _entry(rank_ub=2)})
+
+        signal = _signal(
+            "ranking_change",
+            {
+                "model_name": "GPT-5",
+                "old_rank_ub": 2,
+                "new_rank_ub": 2,
+                "old_rank": 2,
+                "new_rank": 2,
+            },
+        )
+
+        orders = await s.on_signal(signal)
+        assert orders == []
+
     async def test_unmatched_model_no_order(self) -> None:
         s = _strategy()
         await s.initialize(MARKET_DATA, None)
@@ -575,6 +615,29 @@ class TestNewLeader:
         orders = await s.on_signal(signal)
         buy_orders = [o for o in orders if o.side == "yes"]
         assert len(buy_orders) == 0
+
+    async def test_uses_new_top_org_payload_for_kxllm1(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(org_market_data, {"positions": {"KXLLM1-OPENAI": 2}})
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        signal = _signal(
+            "new_leader",
+            {
+                "new_leader": "Gemini 3",
+                "previous_leader": "GPT-5",
+                "new_top_org": "Google",
+            },
+        )
+
+        orders = await s.on_signal(signal)
+        assert any(o.ticker == "KXLLM1-GOOGLE" and o.side == "yes" for o in orders)
+        assert any(o.ticker == "KXLLM1-OPENAI" and o.side == "no" for o in orders)
 
     async def test_tracks_new_leader_in_rankings(self) -> None:
         s = _strategy()
@@ -805,6 +868,42 @@ class TestMarketUpdate:
         c = s.contracts["KXTOPMODEL-GPT5"]
         assert c.yes_bid == 60
         assert c.yes_ask == 58  # unchanged
+
+    async def test_zero_values_do_not_overwrite_existing_quotes(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        await s.on_market_update({"ticker": "KXTOPMODEL-GPT5", "yes_bid": 0, "yes_ask": 0, "last_price": 0})
+
+        c = s.contracts["KXTOPMODEL-GPT5"]
+        assert c.yes_bid == 55
+        assert c.yes_ask == 58
+        assert c.last_price == 56
+
+    async def test_quote_update_changes_pricing_decision(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        signal = _signal(
+            "ranking_change",
+            {
+                "model_name": "GPT-5",
+                "old_rank_ub": 3,
+                "new_rank_ub": 1,
+                "old_rank": 3,
+                "new_rank": 1,
+                "old_score": 1300.0,
+                "new_score": 1350.0,
+            },
+        )
+
+        before_update = await s.on_signal(signal)
+        assert len(before_update) == 1
+
+        await s.on_market_update({"ticker": "KXTOPMODEL-GPT5", "yes_ask": 90, "last_price": 89})
+
+        after_update = await s.on_signal(signal)
+        assert after_update == []
 
     async def test_unknown_ticker_ignored(self) -> None:
         s = _strategy()
@@ -1167,3 +1266,157 @@ class TestEdgeCases:
         signal = _signal("model_removed", {"model_name": "GPT-5", "last_rank_ub": 3})
         orders = await s.on_signal(signal)
         assert orders == []
+
+
+class TestPairwiseShift:
+    async def test_pairwise_shift_can_generate_buy(self) -> None:
+        s = _strategy()
+        await s.initialize(
+            {
+                "markets": [
+                    {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 40, "yes_ask": 42, "last_price": 41},
+                ]
+            },
+            None,
+        )
+        s.set_rankings({"GPT-5": _entry(rank_ub=1, rank=1, score=1500)})
+        signal = _signal(
+            "pairwise_shift",
+            {
+                "model_name": "GPT-5",
+                "new_average_pairwise_win_rate": 0.58,
+                "new_total_pairwise_battles": 5000,
+            },
+        )
+        orders = await s.on_signal(signal)
+        assert len(orders) == 1
+        assert orders[0].side == "yes"
+
+
+class TestSettlementBonusGuard:
+    def test_no_winner_bonus_with_incomplete_tiebreak_inputs(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "A": _entry(rank_ub=1, score=1500, votes=0),
+                "B": _entry(rank_ub=1, score=1500, votes=0),
+            }
+        )
+        fv = s.estimate_fair_value("A")
+        assert fv == 65
+
+    def test_complete_tiebreak_inputs_when_votes_and_release_dates_present(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "A": _entry(name="A", rank_ub=1, score=1500, votes=1000, release_date="2025-01-01"),
+                "B": _entry(name="B", rank_ub=1, score=1500, votes=1200, release_date="2025-02-01"),
+            }
+        )
+        assert s._has_complete_tiebreak_inputs() is True
+
+
+class TestOrgContracts:
+    async def test_kxllm1_mapping_uses_organization_names(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(org_market_data, None)
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        orders = await s.on_signal(
+            _signal(
+                "ranking_change",
+                {
+                    "model_name": "GPT-5",
+                    "old_rank_ub": 2,
+                    "new_rank_ub": 1,
+                    "old_rank": 2,
+                    "new_rank": 1,
+                },
+            )
+        )
+
+        assert s.model_ticker_map["GPT-5"] == "KXTOPMODEL-GPT5"
+        assert s._org_ticker_map["OpenAI"] == "KXLLM1-OPENAI"
+        assert {o.ticker for o in orders} >= {"KXTOPMODEL-GPT5", "KXLLM1-OPENAI"}
+
+    def test_org_fair_value_uses_top_org_resolution(self) -> None:
+        s = _strategy()
+        s.set_rankings(
+            {
+                "OpenAI A": _entry(name="OpenAI A", rank_ub=1, score=1400, votes=10000, organization="OpenAI"),
+                "OpenAI B": _entry(name="OpenAI B", rank_ub=2, score=1390, votes=9000, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=1, score=1399, votes=10000, organization="Google"),
+            }
+        )
+
+        # OpenAI wins tiebreak via score and receives winner bonus.
+        assert s.estimate_org_fair_value("OpenAI") == 70
+        assert s.estimate_org_fair_value("Google") == 65
+
+    async def test_org_leader_change_buy_sell_logic(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(
+            org_market_data,
+            {"positions": {"KXTOPMODEL-GPT5": 4, "KXLLM1-OPENAI": 3}},
+        )
+        s.set_rankings(
+            {
+                "GPT-5": _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+                "Gemini 3": _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            }
+        )
+
+        orders = await s.on_signal(
+            _signal(
+                "new_leader",
+                {
+                    "new_leader": "Gemini 3",
+                    "previous_leader": "GPT-5",
+                },
+            )
+        )
+
+        assert any(o.ticker == "KXLLM1-GOOGLE" and o.side == "yes" for o in orders)
+        assert any(o.ticker == "KXLLM1-OPENAI" and o.side == "no" for o in orders)
+
+
+class TestOrgStateMaintenance:
+    async def test_ranking_change_updates_organization_from_signal(self) -> None:
+        s = _strategy(_config(target_series=["KXTOPMODEL", "KXLLM1"]))
+        await s.initialize(
+            {
+                "markets": [
+                    {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 10, "yes_ask": 12, "last_price": 11},
+                    {"ticker": "KXLLM1-OPENAI", "subtitle": "OpenAI", "yes_bid": 10, "yes_ask": 12, "last_price": 11},
+                ]
+            },
+            None,
+        )
+
+        await s.on_signal(
+            _signal(
+                "ranking_change",
+                {
+                    "model_name": "GPT-5",
+                    "organization": "OpenAI",
+                    "old_rank_ub": 2,
+                    "new_rank_ub": 1,
+                    "old_rank": 2,
+                    "new_rank": 1,
+                },
+            )
+        )
+
+        assert s.rankings["GPT-5"].organization == "OpenAI"
+        assert s.estimate_org_fair_value("OpenAI") is not None
+
+    async def test_initialize_restores_org_ticker_map_state(self, org_market_data: dict[str, object]) -> None:
+        s = _strategy()
+        await s.initialize(org_market_data, {"org_ticker_map": {"OpenAI": "KXLLM1-OPENAI"}})
+
+        assert s._org_ticker_map["OpenAI"] == "KXLLM1-OPENAI"

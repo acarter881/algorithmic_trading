@@ -14,6 +14,7 @@ from autotrader.signals.arena_parser import (
     _safe_float,
     _safe_int,
     extract_next_data,
+    extract_pairwise_aggregates,
     parse_csv,
     parse_html_table,
     parse_json_entries,
@@ -49,6 +50,16 @@ def next_data_html() -> str:
 @pytest.fixture
 def csv_leaderboard() -> str:
     return (FIXTURES / "arena_leaderboard.csv").read_text()
+
+
+@pytest.fixture
+def csv_leaderboard_with_release_dates() -> str:
+    return (FIXTURES / "arena_leaderboard_with_release_dates.csv").read_text()
+
+
+@pytest.fixture
+def html_leaderboard_with_release_dates() -> str:
+    return (FIXTURES / "arena_leaderboard_with_release_dates.html").read_text()
 
 
 # ── CSV Parsing ───────────────────────────────────────────────────────
@@ -101,6 +112,14 @@ class TestParseCsv:
         assert entries[0].score == 1300.0
         assert entries[0].votes == 5000
         assert entries[0].organization == "TestOrg"
+
+    def test_release_date_alias_and_normalization(self, csv_leaderboard_with_release_dates: str) -> None:
+        entries = parse_csv(csv_leaderboard_with_release_dates)
+        assert len(entries) == 3
+        assert entries[0].release_date == "2025-01-15"
+        assert entries[1].release_date == "2024-07-03"
+        # Ambiguous numeric month/day is preserved raw.
+        assert entries[2].release_date == "03/04/2025"
 
 
 class TestLooksLikeCsv:
@@ -255,6 +274,12 @@ class TestParseHtmlTable:
         assert entries[0].ci_upper == 3.0
         assert entries[0].ci_lower == -4.0
 
+    def test_release_date_column_alias_parsing(self, html_leaderboard_with_release_dates: str) -> None:
+        entries = parse_html_table(html_leaderboard_with_release_dates)
+        assert len(entries) == 2
+        assert entries[0].release_date == "2025-01-15"
+        assert entries[1].release_date == "2024-03"
+
 
 # ── Unified parse_leaderboard ─────────────────────────────────────────
 
@@ -363,3 +388,64 @@ class TestSafeFloat:
 
     def test_none(self) -> None:
         assert _safe_float(None) == 0.0
+
+
+class TestPairwiseExtraction:
+    def test_extract_pairwise_from_next_payload_html(self) -> None:
+        html = """
+        <html><body><script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "charts": {
+                "pairwise": {
+                  "labels": ["A", "B"],
+                  "battle_matrix": [[0, 200], [200, 0]],
+                  "win_matrix": [[0.5, 0.6], [0.4, 0.5]]
+                }
+              }
+            }
+          }
+        }
+        </script></body></html>
+        """
+        agg = extract_pairwise_aggregates(html)
+        assert agg["A"].total_pairwise_battles == 200
+        assert agg["A"].average_pairwise_win_rate == pytest.approx(0.6)
+
+    def test_extract_pairwise_aggregates(self) -> None:
+        payload = {
+            "charts": {
+                "pairwise": {
+                    "labels": ["A", "B", "C"],
+                    "battle_matrix": [
+                        [0, 100, 50],
+                        [100, 0, 25],
+                        [50, 25, 0],
+                    ],
+                    "win_matrix": [
+                        [0.5, 0.55, 0.60],
+                        [0.45, 0.5, 0.52],
+                        [0.40, 0.48, 0.5],
+                    ],
+                }
+            }
+        }
+        agg = extract_pairwise_aggregates(payload)
+        assert set(agg.keys()) == {"A", "B", "C"}
+        assert agg["A"].total_pairwise_battles == 150
+        assert agg["A"].average_pairwise_win_rate == pytest.approx((0.55 * 100 + 0.60 * 50) / 150)
+
+    def test_release_date_field_is_parsed(self) -> None:
+        data = [
+            {
+                "model_name": "M1",
+                "rank": 1,
+                "rank_ub": 1,
+                "arena_score": 1500,
+                "votes": 1000,
+                "release_date": "2025-01-01",
+            }
+        ]
+        entries = parse_json_entries(data)
+        assert entries[0].release_date == "2025-01-01"

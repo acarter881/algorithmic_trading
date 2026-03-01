@@ -17,6 +17,7 @@ table strategy only works if the page is server-side rendered.
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import json
 import re
@@ -25,7 +26,7 @@ from typing import Any
 import structlog
 from bs4 import BeautifulSoup, Tag
 
-from autotrader.signals.arena_types import LeaderboardEntry
+from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("autotrader.signals.arena_parser")
 
@@ -42,6 +43,7 @@ _CI_UPPER_KEYS = ("ci_upper", "upper_ci", "ci_high", "rating_q975")
 _VOTES_KEYS = ("votes", "num_battles", "total_votes", "num_votes")
 _ORG_KEYS = ("organization", "org", "provider", "developer")
 _NAME_KEYS = ("model_name", "model", "name", "full_name", "key")
+_RELEASE_KEYS = ("release_date", "released_at", "release_time", "launch_date")
 
 
 def _get_first(data: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any:
@@ -81,6 +83,7 @@ def parse_json_entries(data: list[dict[str, Any]]) -> list[LeaderboardEntry]:
                 ci_upper=_safe_float(_get_first(row, _CI_UPPER_KEYS, 0.0)),
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD,
+                release_date=_normalize_release_date(str(_get_first(row, _RELEASE_KEYS, ""))),
             )
         )
 
@@ -106,6 +109,22 @@ def extract_next_data(html: str) -> list[dict[str, Any]] | None:
 
     # Walk common paths where leaderboard data may live
     return _find_leaderboard_array(payload)
+
+
+def extract_next_payload(html: str) -> dict[str, Any] | None:
+    """Extract the raw Next.js ``__NEXT_DATA__`` payload from page HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    script_tag = soup.find("script", id="__NEXT_DATA__")
+    if not isinstance(script_tag, Tag) or not script_tag.string:
+        return None
+
+    try:
+        payload = json.loads(script_tag.string)
+    except json.JSONDecodeError:
+        logger.warning("next_data_invalid_json")
+        return None
+
+    return payload if isinstance(payload, dict) else None
 
 
 def _find_leaderboard_array(obj: Any, depth: int = 0) -> list[dict[str, Any]] | None:
@@ -200,6 +219,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
         ci_lower, ci_upper = _parse_ci(cell_texts[col_map["ci"]]) if "ci" in col_map else (0.0, 0.0)
         votes = _safe_int(cell_texts[col_map["votes"]]) if "votes" in col_map else 0
         org = cell_texts[col_map["org"]] if "org" in col_map else ""
+        release_date = cell_texts[col_map["release_date"]] if "release_date" in col_map else ""
 
         entries.append(
             LeaderboardEntry(
@@ -213,6 +233,7 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
+                release_date=_normalize_release_date(release_date),
             )
         )
 
@@ -292,6 +313,22 @@ def parse_csv(content: str) -> list[LeaderboardEntry]:
                 if org:
                     break
 
+        # Release date (optional)
+        release_date = ""
+        for key in (
+            "release_date",
+            "release date",
+            "released",
+            "released_at",
+            "release_time",
+            "launch_date",
+            "launch date",
+        ):
+            if key in field_map:
+                release_date = _normalize_release_date(row.get(field_map[key], ""))
+                if release_date:
+                    break
+
         entries.append(
             LeaderboardEntry(
                 model_name=name,
@@ -304,6 +341,7 @@ def parse_csv(content: str) -> list[LeaderboardEntry]:
                 ci_upper=ci_upper,
                 votes=votes,
                 is_preliminary=votes < PRELIMINARY_VOTE_THRESHOLD if votes > 0 else False,
+                release_date=release_date,
             )
         )
 
@@ -350,6 +388,80 @@ def parse_leaderboard(html_or_json: str) -> list[LeaderboardEntry]:
     return parse_html_table(html_or_json)
 
 
+def extract_pairwise_aggregates(payload: Any) -> dict[str, PairwiseAggregate]:
+    """Extract pairwise-derived aggregates from Arena payloads.
+
+    The Arena site can publish chart data in varying shapes. This helper uses
+    conservative heuristics and returns an empty map when no compatible data is
+    found.
+    """
+    if isinstance(payload, str):
+        with_payload: Any = None
+        try:
+            with_payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            with_payload = extract_next_payload(payload)
+        payload = with_payload if with_payload is not None else payload
+
+    data = _find_pairwise_data(payload)
+    if not data:
+        return {}
+
+    labels = [str(x) for x in data.get("labels", []) if str(x)]
+    battle = data.get("battle_matrix", [])
+    win = data.get("win_matrix", [])
+    if not labels or len(battle) != len(labels) or len(win) != len(labels):
+        return {}
+
+    aggregates: dict[str, PairwiseAggregate] = {}
+    for i, model in enumerate(labels):
+        battle_row = battle[i] if isinstance(battle[i], list) else []
+        win_row = win[i] if isinstance(win[i], list) else []
+        total_battles = 0
+        win_weighted_sum = 0.0
+
+        for j, battles in enumerate(battle_row):
+            if i == j:
+                continue
+            battle_count = _safe_int(battles)
+            win_rate = _safe_float(win_row[j] if j < len(win_row) else 0.0)
+            if battle_count <= 0:
+                continue
+            total_battles += battle_count
+            win_weighted_sum += win_rate * battle_count
+
+        avg = (win_weighted_sum / total_battles) if total_battles > 0 else 0.0
+        aggregates[model] = PairwiseAggregate(
+            model_name=model,
+            total_pairwise_battles=total_battles,
+            average_pairwise_win_rate=avg,
+        )
+
+    return aggregates
+
+
+def _find_pairwise_data(obj: Any, depth: int = 0) -> dict[str, Any] | None:
+    """Find chart payload containing model labels + battle/win matrices."""
+    if depth > 10:
+        return None
+    if isinstance(obj, dict):
+        labels = obj.get("labels")
+        battle = obj.get("battle_matrix") or obj.get("battleCountMatrix")
+        win = obj.get("win_matrix") or obj.get("winFractionMatrix")
+        if isinstance(labels, list) and isinstance(battle, list) and isinstance(win, list):
+            return {"labels": labels, "battle_matrix": battle, "win_matrix": win}
+        for value in obj.values():
+            found = _find_pairwise_data(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_pairwise_data(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
 def _looks_like_csv(content: str) -> bool:
     """Heuristic: does the content look like CSV data?"""
     if not content or content.lstrip().startswith(("{", "[", "<", "!")):
@@ -371,8 +483,8 @@ def _extract_headers(table: Tag) -> list[str]:
 
     # Fallback: first row of the table
     first_row = table.find("tr")
-    if first_row:
-        return [_clean_cell(th).lower() for th in first_row.find_all(["th", "td"])]  # type: ignore[union-attr]
+    if isinstance(first_row, Tag):
+        return [_clean_cell(th).lower() for th in first_row.find_all(["th", "td"])]
     return []
 
 
@@ -384,6 +496,7 @@ _COLUMN_ALIASES: dict[str, list[str]] = {
     "ci": ["95% ci", "ci", "confidence interval", "95% confidence interval", "ci (95%)"],
     "votes": ["votes", "battles", "num battles", "num_battles", "total votes"],
     "org": ["organization", "org", "provider", "developer", "company"],
+    "release_date": ["release date", "released", "release_date", "released at", "launch date", "launch_date"],
 }
 
 
@@ -480,3 +593,59 @@ def _safe_float(value: Any) -> float:
         except (ValueError, OverflowError):
             return 0.0
     return 0.0
+
+
+def _normalize_release_date(value: str) -> str:
+    """Normalise release dates into sortable ISO-like strings when possible.
+
+    Assumptions:
+    - Unambiguous numeric dates are parsed and emitted as ``YYYY-MM-DD``.
+    - ``MM/YYYY`` and month-name formats are emitted as ``YYYY-MM``.
+    - Year-only values are preserved as ``YYYY``.
+    - Ambiguous numeric dates (e.g. ``03/04/2025``) are preserved raw.
+    """
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    if re.fullmatch(r"\d{4}", raw):
+        return raw
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}", raw):
+        parts = re.split(r"[-/]", raw)
+        return f"{parts[0]}-{int(parts[1]):02d}"
+
+    iso_candidate = raw.replace("/", "-").replace(".", "-")
+    m_iso = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", iso_candidate)
+    if m_iso:
+        y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        try:
+            return dt.date(y, mo, d).isoformat()
+        except ValueError:
+            return raw
+
+    m_num = re.fullmatch(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", raw)
+    if m_num:
+        a, b, y = int(m_num.group(1)), int(m_num.group(2)), int(m_num.group(3))
+        if a <= 12 and b <= 12:
+            return raw
+        month, day = (a, b) if a <= 12 else (b, a)
+        try:
+            return dt.date(y, month, day).isoformat()
+        except ValueError:
+            return raw
+
+    cleaned = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", raw, flags=re.IGNORECASE)
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
+        try:
+            return dt.datetime.strptime(cleaned, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            parsed = dt.datetime.strptime(cleaned, fmt)
+            return f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            continue
+
+    return raw

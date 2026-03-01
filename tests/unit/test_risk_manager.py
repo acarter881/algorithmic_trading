@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from autotrader.config.models import RiskConfig, RiskGlobalConfig, RiskStrategyConfig
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager, RiskVerdict
+from autotrader.state.models import Base
+from autotrader.state.repository import TradingRepository
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -59,12 +66,14 @@ def _portfolio(
     positions: list[PositionInfo] | None = None,
     daily_realized: dict[str, int] | None = None,
     daily_unrealized: dict[str, int] | None = None,
+    ticker_event_map: dict[str, str] | None = None,
 ) -> PortfolioSnapshot:
     return PortfolioSnapshot(
         balance_cents=balance_cents,
         positions=positions or [],
         daily_realized_pnl_cents=daily_realized or {},
         daily_unrealized_pnl_cents=daily_unrealized or {},
+        ticker_event_map=ticker_event_map or {},
     )
 
 
@@ -210,23 +219,75 @@ class TestPositionPerContract:
         decision = rm.evaluate(_order(quantity=10))
         assert not decision.approved
 
+    def test_no_order_reduces_yes_position(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL", quantity=95)]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+        decision = rm.evaluate(_order(side="no", quantity=10))
+        assert decision.approved
+
+    def test_no_order_increases_opposite_side_exposure(self) -> None:
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL", quantity=-95)]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+        decision = rm.evaluate(_order(side="no", quantity=10))
+        assert not decision.approved
+
 
 # ── Position Per Event ───────────────────────────────────────────────────
 
 
 class TestPositionPerEvent:
-    def test_within_event_limit_approved(self) -> None:
+    def test_multi_contract_same_event_uses_ticker_event_map(self) -> None:
         positions = [
-            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=100),
-            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=100),
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=120),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=110),
+        ]
+        rm = _manager(
+            portfolio=_portfolio(
+                positions=positions,
+                ticker_event_map={"KXTOPMODEL-CLAUDE5": "KXTOPMODEL-EV1"},
+            )
+        )
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", quantity=25))
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-EV1" in reason for reason in decision.rejection_reasons)
+
+    def test_same_series_different_event_approved(self) -> None:
+        positions = [
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=140),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=90),
+        ]
+        rm = _manager(
+            portfolio=_portfolio(
+                positions=positions,
+                ticker_event_map={"KXTOPMODEL-CLAUDE5": "KXTOPMODEL-EV2"},
+            )
+        )
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", quantity=25))
+
+        assert decision.approved
+
+    def test_missing_event_metadata_falls_back_to_contract_event_prefix(self) -> None:
+        positions = [
+            PositionInfo(
+                ticker="KXTOPMODEL-26FEB28-GPT5",
+                event_ticker="KXTOPMODEL-26FEB28",
+                quantity=130,
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-26FEB28-GEMINI3",
+                event_ticker="KXTOPMODEL-26FEB28",
+                quantity=110,
+            ),
         ]
         rm = _manager(portfolio=_portfolio(positions=positions))
-        # New order for a different contract in the same event
-        order = _order(ticker="KXTOPMODEL-CLAUDE5", quantity=40)
-        # Ticker not in positions → event_ticker defaults to ticker itself
-        # So this order's event is "KXTOPMODEL-CLAUDE5", not "KXTOPMODEL-EV1"
-        decision = rm.evaluate(order)
-        assert decision.approved
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-26FEB28-CLAUDE5", quantity=20))
+
+        assert not decision.approved
+        assert any("event=KXTOPMODEL-26FEB28" in reason for reason in decision.rejection_reasons)
 
     def test_exceeds_event_limit_rejected(self) -> None:
         positions = [
@@ -255,6 +316,20 @@ class TestPositionPerEvent:
         # per-contract for GPT5 = 50 + 50 = 100 = max → approved
         decision = rm.evaluate(order)
         assert decision.approved
+
+    def test_mixed_yes_no_flows_respect_event_limit(self) -> None:
+        positions = [
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=90),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=100),
+            PositionInfo(ticker="KXTOPMODEL-CLAUDE5", event_ticker="KXTOPMODEL-EV1", quantity=60),
+        ]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+
+        reducing_order = _order(ticker="KXTOPMODEL-GPT5", side="no", quantity=15)
+        assert rm.evaluate(reducing_order).approved
+
+        increasing_order = _order(ticker="KXTOPMODEL-GPT5", side="yes", quantity=1)
+        assert not rm.evaluate(increasing_order).approved
 
 
 # ── Daily Loss ───────────────────────────────────────────────────────────
@@ -302,6 +377,69 @@ class TestDailyLoss:
         decision = rm.evaluate(_order(strategy="leaderboard_alpha"))
         assert decision.approved
 
+    def test_rejects_from_persisted_repository_pnl(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        repo = TradingRepository(sessionmaker(bind=engine))
+
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "buy",
+                "count": 10,
+                "price_cents": 80,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-open",
+                "kalshi_fill_id": "fill-open",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+        repo.record_fill(
+            {
+                "ticker": "KXTOPMODEL-GPT5",
+                "side": "yes",
+                "action": "sell",
+                "count": 10,
+                "price_cents": 20,
+                "fee_cents": 0,
+                "is_taker": True,
+                "is_paper": True,
+                "client_order_id": "leaderboard_alpha-close",
+                "kalshi_fill_id": "fill-close",
+                "filled_at": datetime.datetime.combine(datetime.date.today(), datetime.time(12, 1)).isoformat(),
+            },
+            strategy="leaderboard_alpha",
+        )
+
+        daily_pnl = repo.get_daily_pnl("leaderboard_alpha")
+        assert daily_pnl is not None
+        assert daily_pnl.realized_pnl_cents == -600
+
+        rm = _manager(
+            cfg=_config(
+                strategy_limits={
+                    "leaderboard_alpha": RiskStrategyConfig(
+                        max_position_per_contract=100,
+                        max_position_per_event=250,
+                        max_strategy_loss=5,
+                        min_edge_multiplier=2.5,
+                    )
+                }
+            ),
+            portfolio=_portfolio(
+                daily_realized={"leaderboard_alpha": daily_pnl.realized_pnl_cents},
+                daily_unrealized={"leaderboard_alpha": daily_pnl.unrealized_pnl_cents},
+            ),
+        )
+
+        decision = rm.evaluate(_order())
+        assert not decision.approved
+        assert any(r.check_name == "daily_loss" for r in decision.results if r.verdict == RiskVerdict.REJECTED)
+
 
 # ── Portfolio Exposure ───────────────────────────────────────────────────
 
@@ -322,16 +460,57 @@ class TestPortfolioExposure:
         decision = rm.evaluate(_order(price_cents=50, quantity=300))
         assert not decision.approved
 
-    def test_zero_balance_approved(self) -> None:
+    def test_zero_balance_rejected(self) -> None:
         rm = _manager(portfolio=_portfolio(balance_cents=0))
         decision = rm.evaluate(_order())
-        assert decision.approved
+        assert not decision.approved
+        assert any("invalid balance" in reason.lower() for reason in decision.rejection_reasons)
+
+    def test_negative_balance_rejected(self) -> None:
+        rm = _manager(portfolio=_portfolio(balance_cents=-100))
+        decision = rm.evaluate(_order())
+        assert not decision.approved
+        assert any("invalid balance" in reason.lower() for reason in decision.rejection_reasons)
 
     def test_no_existing_positions(self) -> None:
         rm = _manager(portfolio=_portfolio(balance_cents=100_000))
         # order cost = 50 * 10 = 500c / 100000c = 0.5% << 60%
         decision = rm.evaluate(_order(price_cents=50, quantity=10))
         assert decision.approved
+
+    def test_no_order_can_reduce_gross_exposure(self) -> None:
+        relaxed_limits = {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=1_000,
+                max_position_per_event=2_000,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=500, avg_cost_cents=90)]
+        rm = _manager(
+            cfg=_config(strategy_limits=relaxed_limits),
+            portfolio=_portfolio(balance_cents=100_000, positions=positions),
+        )
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=90, quantity=100))
+        assert decision.approved
+
+    def test_no_order_rejected_when_increasing_no_exposure(self) -> None:
+        relaxed_limits = {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=1_000,
+                max_position_per_event=2_000,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
+        positions = [PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="EV1", quantity=-600, avg_cost_cents=95)]
+        rm = _manager(
+            cfg=_config(strategy_limits=relaxed_limits),
+            portfolio=_portfolio(balance_cents=100_000, positions=positions),
+        )
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-GPT5", side="no", price_cents=95, quantity=100))
+        assert not decision.approved
 
 
 # ── Batch Evaluation ─────────────────────────────────────────────────────

@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime  # noqa: TCH003
 from dataclasses import dataclass, field
 
+from autotrader.signals.settlement import resolve_top_model, resolve_top_org
+
 
 @dataclass(frozen=True)
 class LeaderboardEntry:
@@ -26,6 +28,21 @@ class LeaderboardEntry:
     ci_upper: float = 0.0  # Score confidence interval upper bound
     votes: int = 0  # Number of battles / votes
     is_preliminary: bool = False  # Below vote threshold
+    release_date: str = ""  # Optional model release date string used for tie-breaks
+
+
+@dataclass(frozen=True)
+class PairwiseAggregate:
+    """Aggregated pairwise chart metrics for one model.
+
+    These are derived from Arena pairwise plots (battle-count matrix and
+    model-vs-model win-rate matrix) and can be used as additional alpha
+    features near rank/tie boundaries.
+    """
+
+    model_name: str
+    total_pairwise_battles: int = 0
+    average_pairwise_win_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -51,35 +68,38 @@ class ScoreChange:
     score_delta: float
 
 
+@dataclass(frozen=True)
+class PairwiseChange:
+    """A detected shift in pairwise aggregate metrics between snapshots."""
+
+    model_name: str
+    old_average_pairwise_win_rate: float
+    new_average_pairwise_win_rate: float
+    old_total_pairwise_battles: int
+    new_total_pairwise_battles: int
+
+
 @dataclass
 class LeaderboardSnapshot:
     """Complete leaderboard state at a point in time."""
 
     entries: list[LeaderboardEntry] = field(default_factory=list)
+    pairwise: dict[str, PairwiseAggregate] = field(default_factory=dict)
     source_url: str = ""
     captured_at: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
 
     @property
     def top_model(self) -> str | None:
-        """Model with the best (lowest) Rank(UB)."""
-        if not self.entries:
+        """Model resolved by settlement tie-break rules."""
+        winner = resolve_top_model(self.entries)
+        if winner is None:
             return None
-        best = min(
-            self.entries,
-            key=lambda e: e.rank_ub if e.rank_ub > 0 else float("inf"),
-        )
-        return best.model_name
+        return winner.model_name
 
     @property
     def top_org(self) -> str | None:
-        """Organization of the top-ranked model."""
-        if not self.entries:
-            return None
-        best = min(
-            self.entries,
-            key=lambda e: e.rank_ub if e.rank_ub > 0 else float("inf"),
-        )
-        return best.organization
+        """Organization resolved by settlement tie-break rules."""
+        return resolve_top_org(self.entries)
 
     def by_model_name(self) -> dict[str, LeaderboardEntry]:
         """Index entries by model name for O(1) lookup."""
@@ -92,6 +112,7 @@ class LeaderboardDiff:
 
     rank_changes: list[RankChange] = field(default_factory=list)
     score_changes: list[ScoreChange] = field(default_factory=list)
+    pairwise_changes: list[PairwiseChange] = field(default_factory=list)
     new_entries: list[LeaderboardEntry] = field(default_factory=list)
     removed_entries: list[LeaderboardEntry] = field(default_factory=list)
     leader_changed: bool = False
