@@ -2,6 +2,7 @@
 
 kalshi:
   environment: demo
+  execution_mode: paper
 
 logging:
   level: DEBUG

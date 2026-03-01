@@ -9,16 +9,28 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class Environment(StrEnum):
-    """Trading environment."""
+    """Kalshi API environment — controls which API endpoint is used."""
 
     DEMO = "demo"
     PRODUCTION = "production"
+
+
+class ExecutionMode(StrEnum):
+    """Order execution mode — independent of API environment.
+
+    ``paper``  simulates instant fills locally (no orders sent to exchange).
+    ``live``   submits real orders to Kalshi.
+    """
+
+    PAPER = "paper"
+    LIVE = "live"
 
 
 class KalshiConfig(BaseModel):
     """Kalshi API connection settings."""
 
     environment: Environment = Environment.DEMO
+    execution_mode: ExecutionMode = ExecutionMode.PAPER
     api_key_id: str = ""
     private_key_path: str = ""
     demo_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
