@@ -319,5 +319,41 @@ def preflight(config_dir: str, environment: str | None) -> None:
         raise SystemExit(1)
 
 
+@cli.command()
+@click.option("--config-dir", default="config", help="Path to configuration directory.")
+@click.argument("signals_file", type=click.Path(exists=True))
+@click.option("--market-data", type=click.Path(exists=True), default=None, help="JSON file with market data.")
+def replay(config_dir: str, signals_file: str, market_data: str | None) -> None:
+    """Replay historical signals through the strategy for backtesting."""
+    import asyncio
+    import json as json_mod
+
+    from autotrader.backtest.replay import ReplayEngine
+    from autotrader.config.loader import load_config
+
+    config = load_config(config_dir=config_dir)
+    engine = ReplayEngine(config)
+
+    md: dict | None = None
+    if market_data:
+        with open(market_data) as f:
+            md = json_mod.load(f)
+
+    result = asyncio.run(engine.run(signals_path=signals_file, market_data=md))
+
+    click.echo("Replay Results")
+    click.echo(f"  Signals processed:  {result.total_signals}")
+    click.echo(f"  Proposals generated: {result.total_proposals}")
+    click.echo(f"  Risk approved:      {result.total_approved}")
+    click.echo(f"  Risk rejected:      {result.total_rejected}")
+    click.echo(f"  Fills:              {result.total_fills}")
+    click.echo(f"  Total fees:         {result.total_fees_cents}¢")
+    click.echo(f"  Realized P&L:       {result.realized_pnl_cents}¢")
+    if result.positions:
+        click.echo("  Open positions:")
+        for ticker, qty in result.positions.items():
+            click.echo(f"    {ticker}: {qty}")
+
+
 if __name__ == "__main__":
     cli()
