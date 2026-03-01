@@ -1076,8 +1076,62 @@ class TestDiscordAlerter:
         assert alerter._client is not None
         alerter._client.post = AsyncMock(side_effect=Exception("network error"))  # type: ignore[method-assign]
 
-        # Should not raise
+        # Should not raise — goes to dead-letter after retries
         await alerter.send_trade_alert(ticker="T1", side="yes", quantity=5, price_cents=50, strategy="test")
+        assert len(alerter.dead_letters) == 1
+        await alerter.teardown()
+
+    async def test_retry_on_server_error(self) -> None:
+        alerter = DiscordAlerter(self._discord_config())
+        await alerter.initialize()
+        assert alerter._client is not None
+
+        # Fail twice with 500, then succeed
+        alerter._client.post = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                MagicMock(status_code=500),
+                MagicMock(status_code=500),
+                MagicMock(status_code=204),
+            ]
+        )
+
+        await alerter.send_trade_alert(ticker="T1", side="yes", quantity=5, price_cents=50, strategy="test")
+
+        assert alerter._client.post.call_count == 3
+        assert len(alerter.dead_letters) == 0
+        await alerter.teardown()
+
+    async def test_dead_letter_after_all_retries_exhausted(self) -> None:
+        alerter = DiscordAlerter(self._discord_config())
+        await alerter.initialize()
+        assert alerter._client is not None
+
+        # Fail all 3 attempts
+        alerter._client.post = AsyncMock(  # type: ignore[method-assign]
+            return_value=MagicMock(status_code=500)
+        )
+
+        await alerter.send_error_alert("test_error", "something broke")
+
+        assert alerter._client.post.call_count == alerter.MAX_RETRIES
+        assert len(alerter.dead_letters) == 1
+        assert alerter.dead_letters[0]["embeds"][0]["title"] == "Error: test_error"
+        await alerter.teardown()
+
+    async def test_no_retry_on_4xx(self) -> None:
+        alerter = DiscordAlerter(self._discord_config())
+        await alerter.initialize()
+        assert alerter._client is not None
+
+        # 400 should not be retried (except 429)
+        alerter._client.post = AsyncMock(  # type: ignore[method-assign]
+            return_value=MagicMock(status_code=400)
+        )
+
+        await alerter.send_system_alert("test", "msg")
+
+        assert alerter._client.post.call_count == 1
+        assert len(alerter.dead_letters) == 1
         await alerter.teardown()
 
     async def test_no_send_when_disabled_flag(self) -> None:
