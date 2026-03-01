@@ -1488,7 +1488,11 @@ class TestWebSocketIntegration:
 
     async def test_ws_client_not_created_when_disabled(self) -> None:
         loop = TradingLoop(_ws_config(websocket_enabled=False))
-        market_data = {"markets": [{"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45}]}
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45}
+            ]
+        }
         await loop.initialize(market_data=market_data)
         assert loop.ws_client is None
         await loop.shutdown()

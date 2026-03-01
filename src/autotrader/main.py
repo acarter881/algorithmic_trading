@@ -213,10 +213,7 @@ def pnl(config_dir: str, days: int, strategy: str | None, as_csv: bool) -> None:
         total_trades += row.trade_count
 
     click.echo("-" * len(header))
-    click.echo(
-        f"{'TOTAL':<12} {'':<20} {total_realized:>9}¢ {total_unrealized:>9}¢ "
-        f"{total_fees:>7}¢ {total_trades:>7}"
-    )
+    click.echo(f"{'TOTAL':<12} {'':<20} {total_realized:>9}¢ {total_unrealized:>9}¢ {total_fees:>7}¢ {total_trades:>7}")
 
 
 @cli.command()

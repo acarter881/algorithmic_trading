@@ -124,9 +124,7 @@ class TradingLoop:
         for strat in self._strategies.values():
             state_payload: dict[str, Any] = {}
             if self._repo is not None:
-                state_payload["positions"] = self._repo.get_net_positions_by_ticker(
-                    strat.name, is_paper=is_paper_mode
-                )
+                state_payload["positions"] = self._repo.get_net_positions_by_ticker(strat.name, is_paper=is_paper_mode)
             state_payload["ticker_event_map"] = dict(self._ticker_event_map)
             await strat.initialize(market_data, state_payload)
 
@@ -172,9 +170,7 @@ class TradingLoop:
             mode=mode.value,
             poll_interval=self._config.arena_monitor.poll_interval_seconds,
             strategies=list(self._strategies.keys()),
-            contracts_loaded=sum(
-                len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts")
-            ),
+            contracts_loaded=sum(len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts")),
             persistence=self._repo is not None,
             discord=self._alerter.enabled,
         )
@@ -187,9 +183,7 @@ class TradingLoop:
                 hint="Check API credentials and that target series have open markets",
             )
 
-        total_contracts = sum(
-            len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts")
-        )
+        total_contracts = sum(len(s.contracts) for s in self._strategies.values() if hasattr(s, "contracts"))
         # Record startup event
         self._persist_system_event(
             "startup",
@@ -295,6 +289,13 @@ class TradingLoop:
         interval = self._config.arena_monitor.poll_interval_seconds
         reconcile_interval = self._config.risk.global_config.reconciliation_interval_seconds
         ticks_per_reconcile = max(1, reconcile_interval // interval) if reconcile_interval > 0 else 0
+
+        # Paper mode tracks positions purely in-memory — reconciling
+        # against the exchange would overwrite paper positions with zeros.
+        is_paper = self._engine is not None and self._engine.mode == ExecutionMode.PAPER
+        if is_paper:
+            ticks_per_reconcile = 0
+
         logger.info(
             "trading_loop_started",
             interval_seconds=interval,
@@ -306,7 +307,9 @@ class TradingLoop:
         await self._start_websocket()
 
         # Reconcile on startup so that positions are accurate from tick 1.
-        await self._reconcile_positions()
+        # Skipped in paper mode since exchange state doesn't reflect paper trades.
+        if not is_paper:
+            await self._reconcile_positions()
 
         while self._running:
             await self._tick()
@@ -798,10 +801,7 @@ class TradingLoop:
             return
 
         # Check if any strategy tracks this ticker
-        relevant = any(
-            hasattr(s, "contracts") and ticker in s.contracts
-            for s in self._strategies.values()
-        )
+        relevant = any(hasattr(s, "contracts") and ticker in s.contracts for s in self._strategies.values())
         if not relevant:
             return
 
@@ -841,9 +841,7 @@ class TradingLoop:
 
         # Route to the matching strategy, or all strategies if unknown
         target_strategies = (
-            [self._strategies[strategy_name]]
-            if strategy_name in self._strategies
-            else list(self._strategies.values())
+            [self._strategies[strategy_name]] if strategy_name in self._strategies else list(self._strategies.values())
         )
 
         # Run the async on_fill within the event loop

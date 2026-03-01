@@ -77,6 +77,21 @@ class ReplayEngine:
         # Paper execution engine
         engine = ExecutionEngine(mode=ExecutionMode.PAPER, fee_calculator=self._fee_calc)
 
+        # Wire fill callbacks so strategy positions update on each fill.
+        def _on_fill(fill_data: dict[str, Any]) -> None:
+            ticker = fill_data.get("ticker", "")
+            if ticker not in strategy.contracts:
+                return
+            count = fill_data.get("count", 0)
+            side = fill_data.get("side", "")
+            action = fill_data.get("action", "buy")
+            delta = count if side == "yes" else -count
+            if action == "sell":
+                delta = -delta
+            strategy.contracts[ticker].position += delta
+
+        engine.on_fill(_on_fill)
+
         result = ReplayResult(total_signals=len(signals))
 
         for signal in signals:
@@ -111,24 +126,22 @@ class ReplayEngine:
                     for er in exec_results:
                         if er.success:
                             result.total_fills += 1
-                            fee = self._fee_calc.taker_fee(
-                                er.order.price_cents, er.order.quantity
-                            ).total_fee_cents
+                            fee = self._fee_calc.taker_fee(er.order.price_cents, er.order.quantity).total_fee_cents
                             result.total_fees_cents += fee
-                            result.trades.append({
-                                "ticker": er.order.ticker,
-                                "side": er.order.side,
-                                "price_cents": er.order.price_cents,
-                                "quantity": er.order.quantity,
-                                "fee_cents": fee,
-                            })
+                            result.trades.append(
+                                {
+                                    "ticker": er.order.ticker,
+                                    "side": er.order.side,
+                                    "price_cents": er.order.price_cents,
+                                    "quantity": er.order.quantity,
+                                    "fee_cents": fee,
+                                }
+                            )
                 else:
                     result.total_rejected += 1
 
         # Final positions
-        result.positions = {
-            t: c.position for t, c in strategy.contracts.items() if c.position != 0
-        }
+        result.positions = {t: c.position for t, c in strategy.contracts.items() if c.position != 0}
 
         # Compute realized P&L from trades
         result.realized_pnl_cents = self._compute_realized_pnl(result.trades)
