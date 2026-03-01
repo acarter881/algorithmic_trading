@@ -244,7 +244,7 @@ class TestTradingLoopInit:
         with pytest.raises(RuntimeError, match="no_tradable_markets_loaded"):
             await loop.initialize(market_data={"markets": []})
 
-    async def test_initialize_paper_mode_sends_repeated_alerts_when_series_missing_markets(self, monkeypatch) -> None:
+    async def test_initialize_paper_mode_sends_single_alert_when_series_missing_markets(self, monkeypatch) -> None:
         mock_alerter = MagicMock()
         mock_alerter.enabled = True
         mock_alerter.initialize = AsyncMock()
@@ -257,11 +257,11 @@ class TestTradingLoopInit:
         loop = TradingLoop(_config())
         await loop.initialize(market_data={"markets": []})
 
-        assert mock_alerter.send_error_alert.await_count == 3
-        assert mock_alerter.send_system_alert.await_count >= 4
-        first_error_call = mock_alerter.send_error_alert.await_args_list[0]
-        assert first_error_call.args[0] == "no_tradable_markets_loaded"
-        assert "Missing series: KXTOPMODEL" in first_error_call.args[1]
+        # Paper mode should alert once (warning + startup), not spam
+        system_calls = mock_alerter.send_system_alert.await_args_list
+        warning_calls = [c for c in system_calls if "no tradable markets" in str(c).lower()]
+        assert len(warning_calls) == 1
+        assert "Missing series: KXTOPMODEL" in warning_calls[0].args[1]
 
         await loop.shutdown()
 
