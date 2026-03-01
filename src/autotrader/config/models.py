@@ -110,6 +110,13 @@ class DatabaseConfig(BaseModel):
     echo: bool = False
 
 
+class MetricsConfig(BaseModel):
+    """Metrics / observability configuration."""
+
+    enabled: bool = False
+    port: int = 9090
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -137,6 +144,7 @@ class AppConfig(BaseModel):
     leaderboard_alpha: LeaderboardAlphaConfig = Field(default_factory=LeaderboardAlphaConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod

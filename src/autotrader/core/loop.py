@@ -26,6 +26,7 @@ from autotrader.api.client import KalshiAPIClient, MarketInfo
 from autotrader.api.websocket import Channel, KalshiWebSocketClient
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
+from autotrader.monitoring.metrics import metrics
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
 from autotrader.signals.arena_monitor import ArenaMonitor, ArenaMonitorFailureThresholdError
 from autotrader.state.repository import TradingRepository
@@ -421,9 +422,11 @@ class TradingLoop:
         All exceptions are caught and logged so that the loop continues.
         """
         self._tick_count += 1
+        metrics.increment("ticks_total")
         try:
             await self._tick_inner()
         except Exception:
+            metrics.increment("tick_errors_total")
             logger.exception("tick_error", tick=self._tick_count)
             self._persist_system_event("tick_error", {"tick": self._tick_count}, "error")
             await self._send_error_alert("tick_error", f"Tick {self._tick_count} failed — see logs")
@@ -449,6 +452,7 @@ class TradingLoop:
             logger.debug("tick_no_signals", tick=self._tick_count)
             return
 
+        metrics.increment("signals_total", len(signals))
         logger.info(
             "tick_signals_received",
             tick=self._tick_count,
@@ -470,6 +474,7 @@ class TradingLoop:
             logger.debug("tick_no_proposals", tick=self._tick_count)
             return
 
+        metrics.increment("proposals_total", len(all_proposals))
         logger.info(
             "tick_proposals_generated",
             tick=self._tick_count,
@@ -487,7 +492,9 @@ class TradingLoop:
             decision = self._risk.evaluate(proposal)
             if decision.approved:
                 approved.append(proposal)
+                metrics.increment("risk_approved_total")
             else:
+                metrics.increment("risk_rejected_total")
                 logger.info(
                     "proposal_risk_rejected",
                     tick=self._tick_count,
@@ -520,6 +527,7 @@ class TradingLoop:
             self._persist_order(result.order)
 
             if result.success:
+                metrics.increment("orders_filled_total")
                 logger.info(
                     "order_executed",
                     tick=self._tick_count,
@@ -530,6 +538,7 @@ class TradingLoop:
                 # Send Discord trade alert
                 await self._send_trade_alert(result.order)
             else:
+                metrics.increment("orders_failed_total")
                 logger.error(
                     "order_execution_failed",
                     tick=self._tick_count,

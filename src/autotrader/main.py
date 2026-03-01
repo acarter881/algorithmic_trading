@@ -61,6 +61,13 @@ def run(config_dir: str, environment: str | None) -> None:
     session_factory = get_session_factory(db_engine)
     log.info("database_initialized", url=config.database.url)
 
+    # Start metrics server if configured
+    if config.metrics.enabled:
+        from autotrader.monitoring.metrics import start_metrics_server
+
+        start_metrics_server(port=config.metrics.port)
+        click.echo(f"Metrics server: http://0.0.0.0:{config.metrics.port}/metrics")
+
     click.echo(f"Kalshi Autotrader v{__version__}")
     click.echo(f"Environment: {effective_environment}")
     click.echo(f"Kalshi API base URL: {effective_base_url}")
