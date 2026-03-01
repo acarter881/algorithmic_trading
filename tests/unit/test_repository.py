@@ -439,3 +439,45 @@ class TestErrorIsolation:
         repo = _repo()
         # This should work fine even with empty data
         repo.record_signal("src", "evt", {}, [], "low")
+
+
+# ── P&L history queries ──────────────────────────────────────────────────
+
+
+class TestPnlHistory:
+    def test_get_pnl_history_returns_today(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(), strategy="leaderboard_alpha")
+        rows = repo.get_pnl_history(strategy="leaderboard_alpha", days=1)
+        assert len(rows) == 1
+        assert rows[0].strategy == "leaderboard_alpha"
+
+    def test_get_pnl_history_empty_when_no_data(self) -> None:
+        repo = _repo()
+        rows = repo.get_pnl_history(strategy="no_such_strategy", days=7)
+        assert rows == []
+
+    def test_get_pnl_history_all_strategies(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(), strategy="strat_a")
+        repo.record_fill(
+            _fill_data(kalshi_fill_id="fill-2", client_order_id="strat_b-T2-xyz"),
+            strategy="strat_b",
+        )
+        rows = repo.get_pnl_history(strategy=None, days=1)
+        assert len(rows) == 2
+
+    def test_get_all_fills(self) -> None:
+        repo = _repo()
+        repo.record_fill(_fill_data(), strategy="leaderboard_alpha")
+        repo.record_fill(
+            _fill_data(kalshi_fill_id="fill-2", client_order_id="leaderboard_alpha-T2-xyz"),
+            strategy="leaderboard_alpha",
+        )
+        fills = repo.get_all_fills(strategy="leaderboard_alpha", days=1)
+        assert len(fills) == 2
+
+    def test_get_all_fills_empty(self) -> None:
+        repo = _repo()
+        fills = repo.get_all_fills(strategy="nothing", days=1)
+        assert fills == []

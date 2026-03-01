@@ -24,6 +24,7 @@ class KalshiConfig(BaseModel):
     demo_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
     production_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     websocket_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    websocket_enabled: bool = False
     request_timeout_seconds: float = 30.0
     max_retries: int = 3
     rate_limit_buffer_pct: float = 0.1
@@ -109,6 +110,13 @@ class DatabaseConfig(BaseModel):
     echo: bool = False
 
 
+class MetricsConfig(BaseModel):
+    """Metrics / observability configuration."""
+
+    enabled: bool = False
+    port: int = 9090
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -136,6 +144,7 @@ class AppConfig(BaseModel):
     leaderboard_alpha: LeaderboardAlphaConfig = Field(default_factory=LeaderboardAlphaConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod

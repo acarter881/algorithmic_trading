@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import collections
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -12,17 +14,25 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("autotrader.monitoring.discord")
 
+# Maximum number of failed payloads retained in the dead-letter queue.
+_MAX_DEAD_LETTERS = 100
+
 
 class DiscordAlerter:
     """Sends alerts to a Discord channel via webhook.
 
     Supports trade alerts, signal alerts, error alerts, and custom messages.
-    All sends are fire-and-forget — failures are logged but never propagated.
+    Failed sends are retried up to 3 times with exponential backoff. After
+    all retries are exhausted the payload is stored in a dead-letter deque
+    that can be inspected or drained by monitoring tooling.
     """
+
+    MAX_RETRIES = 3
 
     def __init__(self, config: DiscordConfig) -> None:
         self._config = config
         self._client: httpx.AsyncClient | None = None
+        self.dead_letters: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_DEAD_LETTERS)
 
     async def initialize(self) -> None:
         if not self._config.enabled or not self._config.webhook_url:
@@ -111,9 +121,49 @@ class DiscordAlerter:
             payload["content"] = content
         if embeds:
             payload["embeds"] = embeds
-        try:
-            resp = await self._client.post(self._config.webhook_url, json=payload)
-            if resp.status_code >= 400:
-                logger.warning("discord_send_failed", status=resp.status_code)
-        except Exception:
-            logger.exception("discord_send_error")
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                resp = await self._client.post(self._config.webhook_url, json=payload)
+                if resp.status_code < 400:
+                    return  # success
+
+                # Discord rate-limit: honour Retry-After header
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("Retry-After", "1"))
+                    logger.warning(
+                        "discord_rate_limited",
+                        retry_after=retry_after,
+                        attempt=attempt + 1,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+
+                # Other 4xx/5xx — retryable on 5xx, dead-letter on 4xx
+                if resp.status_code >= 500:
+                    logger.warning(
+                        "discord_send_failed",
+                        status=resp.status_code,
+                        attempt=attempt + 1,
+                    )
+                    await asyncio.sleep(2**attempt)
+                    continue
+
+                # 4xx (not 429) — malformed payload, don't retry
+                logger.warning("discord_send_rejected", status=resp.status_code)
+                break
+
+            except Exception:
+                logger.exception("discord_send_error", attempt=attempt + 1)
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                break
+
+        # All retries exhausted — add to dead-letter queue
+        self.dead_letters.append(payload)
+        logger.error(
+            "discord_alert_dead_lettered",
+            dead_letter_count=len(self.dead_letters),
+            payload_title=payload.get("embeds", [{}])[0].get("title", ""),
+        )
