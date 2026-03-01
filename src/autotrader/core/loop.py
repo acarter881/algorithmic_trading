@@ -273,10 +273,21 @@ class TradingLoop:
 
         self._running = True
         interval = self._config.arena_monitor.poll_interval_seconds
-        logger.info("trading_loop_started", interval_seconds=interval)
+        reconcile_interval = self._config.risk.global_config.reconciliation_interval_seconds
+        ticks_per_reconcile = max(1, reconcile_interval // interval) if reconcile_interval > 0 else 0
+        logger.info(
+            "trading_loop_started",
+            interval_seconds=interval,
+            reconcile_every_ticks=ticks_per_reconcile or "disabled",
+        )
+
+        # Reconcile on startup so that positions are accurate from tick 1.
+        await self._reconcile_positions()
 
         while self._running:
             await self._tick()
+            if ticks_per_reconcile and self._tick_count % ticks_per_reconcile == 0:
+                await self._reconcile_positions()
             await asyncio.sleep(interval)
 
         logger.info("trading_loop_stopped", total_ticks=self._tick_count)
@@ -566,6 +577,76 @@ class TradingLoop:
                     self._ticker_event_map[ticker] = market.event_ticker
             except Exception:
                 logger.warning("market_data_refresh_failed", ticker=ticker, tick=self._tick_count)
+
+    # ── Position reconciliation ──────────────────────────────────────
+
+    async def _reconcile_positions(self) -> None:
+        """Reconcile in-memory strategy positions against the Kalshi API.
+
+        Fetches positions from the exchange and compares them to the
+        strategy's internal tracking.  Discrepancies are logged and the
+        strategy's positions are corrected to match the exchange.
+
+        Runs periodically (configurable via ``reconciliation_interval_seconds``)
+        and once on startup to recover from any prior unclean shutdown.
+        """
+        api = self._api_client or self._market_data_client
+        if api is None or self._strategy is None:
+            return
+
+        try:
+            exchange_positions: dict[str, int] = {}
+            cursor: str | None = None
+            while True:
+                page, cursor = api.get_positions(limit=200, cursor=cursor)
+                for pos in page:
+                    if pos.ticker in self._strategy.contracts:
+                        exchange_positions[pos.ticker] = pos.position
+                if not cursor or not page:
+                    break
+
+            # Compare against strategy in-memory state
+            mismatches: list[dict[str, object]] = []
+            for ticker, contract in self._strategy.contracts.items():
+                exchange_qty = exchange_positions.get(ticker, 0)
+                if contract.position != exchange_qty:
+                    mismatches.append(
+                        {
+                            "ticker": ticker,
+                            "strategy_position": contract.position,
+                            "exchange_position": exchange_qty,
+                        }
+                    )
+                    # Correct the strategy's position to match the exchange
+                    contract.position = exchange_qty
+
+            if mismatches:
+                logger.warning(
+                    "position_reconciliation_mismatches",
+                    count=len(mismatches),
+                    mismatches=mismatches,
+                    tick=self._tick_count,
+                )
+                self._persist_system_event(
+                    "position_reconciliation_mismatch",
+                    {"mismatches": mismatches, "tick": self._tick_count},
+                    severity="warning",
+                )
+                await self._send_error_alert(
+                    "position_reconciliation_mismatch",
+                    f"{len(mismatches)} position(s) corrected: "
+                    + ", ".join(
+                        f"{m['ticker']}: {m['strategy_position']}→{m['exchange_position']}" for m in mismatches
+                    ),
+                )
+            else:
+                logger.debug(
+                    "position_reconciliation_ok",
+                    tracked_tickers=len(self._strategy.contracts),
+                    tick=self._tick_count,
+                )
+        except Exception:
+            logger.exception("position_reconciliation_failed", tick=self._tick_count)
 
     # ── Fill callback ─────────────────────────────────────────────────
 

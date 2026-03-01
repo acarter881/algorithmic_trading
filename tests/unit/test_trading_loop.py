@@ -1289,3 +1289,121 @@ class TestMarketDiscovery:
         assert d["yes_bid"] == 40
         assert d["yes_ask"] == 45
         assert d["last_price"] == 42
+
+
+# ── Position reconciliation ───────────────────────────────────────────
+
+
+def _mock_api_with_positions(
+    markets: list[MarketInfo] | None = None,
+    positions: list[dict[str, object]] | None = None,
+) -> KalshiAPIClient:
+    """Mock API client that supports both market discovery and position queries."""
+    from autotrader.api.client import PositionInfo as APIPositionInfo
+
+    client = _mock_api_client(markets)
+    if positions is None:
+        positions = []
+    client.get_positions.return_value = (
+        [
+            APIPositionInfo(
+                ticker=p["ticker"],
+                event_ticker=p.get("event_ticker", ""),
+                market_result=None,
+                position=p["position"],
+                total_cost=0,
+                realized_pnl=0,
+                fees_paid=0,
+                resting_order_count=0,
+            )
+            for p in positions
+        ],
+        None,
+    )
+    return client
+
+
+class TestPositionReconciliation:
+    async def test_reconcile_corrects_mismatch(self) -> None:
+        api = _mock_api_with_positions(
+            positions=[
+                {"ticker": "KXTOPMODEL-GPT5", "position": 10},
+                {"ticker": "KXTOPMODEL-CLAUDE5", "position": -3},
+            ],
+        )
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        assert loop.strategy is not None
+        # Simulate a drift in strategy positions
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 5  # should be 10
+        loop.strategy.contracts["KXTOPMODEL-CLAUDE5"].position = 0  # should be -3
+
+        await loop._reconcile_positions()
+
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 10
+        assert loop.strategy.contracts["KXTOPMODEL-CLAUDE5"].position == -3
+        await loop.shutdown()
+
+    async def test_reconcile_no_mismatch_is_silent(self) -> None:
+        api = _mock_api_with_positions(
+            positions=[
+                {"ticker": "KXTOPMODEL-GPT5", "position": 0},
+                {"ticker": "KXTOPMODEL-CLAUDE5", "position": 0},
+            ],
+        )
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        # Positions already match — should complete without alerts
+        await loop._reconcile_positions()
+
+        assert loop.strategy is not None
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 0
+        await loop.shutdown()
+
+    async def test_reconcile_survives_api_failure(self) -> None:
+        api = _mock_api_client()
+        api.get_positions.side_effect = KalshiAPIError("timeout", status_code=504)
+
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 5
+
+        # Should not raise
+        await loop._reconcile_positions()
+
+        # Position should be unchanged (not zeroed out)
+        assert loop.strategy.contracts["KXTOPMODEL-GPT5"].position == 5
+        await loop.shutdown()
+
+    async def test_reconcile_persists_mismatch_event(self) -> None:
+        sf = _session_factory()
+        api = _mock_api_with_positions(
+            positions=[{"ticker": "KXTOPMODEL-GPT5", "position": 7}],
+        )
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api, session_factory=sf)
+
+        assert loop.strategy is not None
+        loop.strategy.contracts["KXTOPMODEL-GPT5"].position = 2
+
+        await loop._reconcile_positions()
+
+        with sf() as session:
+            events = session.query(SystemEvent).all()
+            recon_events = [e for e in events if e.event_type == "position_reconciliation_mismatch"]
+            assert len(recon_events) == 1
+            assert recon_events[0].severity == "warning"
+        await loop.shutdown()
+
+    async def test_reconcile_skipped_without_api(self) -> None:
+        loop = TradingLoop(_config())
+        with patch.object(TradingLoop, "_bootstrap_market_data", return_value={"markets": []}):
+            await loop.initialize()
+
+        # No API client — reconciliation should be a no-op
+        await loop._reconcile_positions()
+        await loop.shutdown()
