@@ -201,5 +201,5 @@ class ReplayEngine:
         """Estimate realized P&L from paper trades (simplified)."""
         # For paper trades the fill price = proposed price, and settlement
         # isn't known. Return negative fees as a conservative estimate.
-        total_fees = sum(t.get("fee_cents", 0) for t in trades)
+        total_fees: int = sum(t.get("fee_cents", 0) for t in trades)
         return -total_fees

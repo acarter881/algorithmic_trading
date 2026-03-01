@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 
 from autotrader import __version__
@@ -283,7 +285,7 @@ def preflight(config_dir: str, environment: str | None) -> None:
         private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
         client.connect(private_key_pem=private_key_pem)
         status = client.get_exchange_status()
-        _pass("Kalshi API", f"exchange_active={status.exchange_active}")
+        _pass("Kalshi API", f"exchange_active={status.get('exchange_active')}")
     except Exception as e:
         _fail("Kalshi API", str(e))
 
@@ -338,7 +340,7 @@ def replay(config_dir: str, signals_file: str, market_data: str | None) -> None:
     config = load_config(config_dir=config_dir)
     engine = ReplayEngine(config)
 
-    md: dict | None = None
+    md: dict[str, Any] | None = None
     if market_data:
         with open(market_data) as f:
             md = json_mod.load(f)

@@ -23,7 +23,7 @@ logger = structlog.get_logger("autotrader.monitoring.metrics")
 
 # Try to import prometheus_client for optional Prometheus exposition
 try:
-    from prometheus_client import Counter as PromCounter
+    from prometheus_client import Counter as PromCounter  # type: ignore[import-not-found]
     from prometheus_client import Gauge as PromGauge
     from prometheus_client import generate_latest
 

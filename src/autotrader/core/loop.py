@@ -175,8 +175,8 @@ class TradingLoop:
             discord=self._alerter.enabled,
         )
 
-        primary = self._primary_strategy
-        if primary is not None and hasattr(primary, "contracts") and not primary.contracts:
+        first_strategy = self._primary_strategy
+        if first_strategy is not None and hasattr(first_strategy, "contracts") and not first_strategy.contracts:
             logger.warning(
                 "no_tradable_markets_loaded",
                 target_series=self._config.leaderboard_alpha.target_series,
@@ -694,7 +694,7 @@ class TradingLoop:
             for strat in self._strategies.values():
                 if not hasattr(strat, "contracts"):
                     continue
-                for ticker, contract in strat.contracts.items():
+                for ticker, contract in strat.contracts.items():  # type: ignore[attr-defined]
                     exchange_qty = exchange_positions.get(ticker, 0)
                     if contract.position != exchange_qty:
                         mismatches.append(
@@ -914,7 +914,7 @@ class TradingLoop:
             return mapped
         for strat in self._strategies.values():
             if hasattr(strat, "resolve_event_ticker"):
-                resolved = strat.resolve_event_ticker(ticker)
+                resolved: str = strat.resolve_event_ticker(ticker)
                 if resolved:
                     self._ticker_event_map[ticker] = resolved
                     return resolved
