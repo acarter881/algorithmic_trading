@@ -1171,7 +1171,11 @@ class TestMarketDiscovery:
 
     async def test_explicit_market_data_skips_discovery(self) -> None:
         api = _mock_api_client()
-        explicit = {"markets": [{"ticker": "MANUAL-1", "subtitle": "ManualModel", "yes_bid": 10, "yes_ask": 15, "last_price": 12}]}
+        explicit = {
+            "markets": [
+                {"ticker": "MANUAL-1", "subtitle": "ManualModel", "yes_bid": 10, "yes_ask": 15, "last_price": 12}
+            ]
+        }
         loop = TradingLoop(_config())
         await loop.initialize(market_data=explicit, api_client=api)
 

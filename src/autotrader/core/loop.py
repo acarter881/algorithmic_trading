@@ -341,14 +341,25 @@ class TradingLoop:
 
         for series in target_series:
             try:
-                markets, _ = api.get_markets(series_ticker=series, status="open")
-                for m in markets:
+                series_markets: list[MarketInfo] = []
+                cursor: str | None = None
+                while True:
+                    page, cursor = api.get_markets(
+                        series_ticker=series,
+                        status="open",
+                        limit=200,
+                        cursor=cursor,
+                    )
+                    series_markets.extend(page)
+                    if not cursor or not page:
+                        break
+                for m in series_markets:
                     all_markets.append(self._market_info_to_dict(m))
                 logger.info(
                     "markets_discovered",
                     series=series,
-                    count=len(markets),
-                    tickers=[m.ticker for m in markets],
+                    count=len(series_markets),
+                    tickers=[m.ticker for m in series_markets],
                 )
             except Exception:
                 logger.warning("market_discovery_failed", series=series)
