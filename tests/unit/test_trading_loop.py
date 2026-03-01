@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from autotrader.api.client import KalshiAPIClient, KalshiAPIError, MarketInfo
 from autotrader.config.models import (
     AppConfig,
     ArenaMonitorConfig,
@@ -1097,3 +1098,194 @@ class TestDiscordAlerter:
         await alerter.send_error_alert("test", "test")
         alerter._client.post.assert_not_called()
         await alerter.teardown()
+
+
+# ── Market discovery ──────────────────────────────────────────────────
+
+
+def _mock_api_client(markets: list[MarketInfo] | None = None) -> KalshiAPIClient:
+    """Create a mock KalshiAPIClient that returns the given markets."""
+    client = MagicMock(spec=KalshiAPIClient)
+    if markets is None:
+        markets = [
+            MarketInfo(
+                ticker="KXTOPMODEL-GPT5",
+                event_ticker="KXTOPMODEL",
+                series_ticker="KXTOPMODEL",
+                title="Which AI model will be #1?",
+                subtitle="GPT-5",
+                status="open",
+                yes_bid=45,
+                yes_ask=50,
+                no_bid=50,
+                no_ask=55,
+                last_price=48,
+                volume=1000,
+                volume_24h=200,
+                open_time="2026-01-01T00:00:00Z",
+                close_time="2026-12-31T23:59:59Z",
+                expiration_time="2026-12-31T23:59:59Z",
+            ),
+            MarketInfo(
+                ticker="KXTOPMODEL-CLAUDE5",
+                event_ticker="KXTOPMODEL",
+                series_ticker="KXTOPMODEL",
+                title="Which AI model will be #1?",
+                subtitle="Claude 5",
+                status="open",
+                yes_bid=30,
+                yes_ask=35,
+                no_bid=65,
+                no_ask=70,
+                last_price=33,
+                volume=800,
+                volume_24h=150,
+                open_time="2026-01-01T00:00:00Z",
+                close_time="2026-12-31T23:59:59Z",
+                expiration_time="2026-12-31T23:59:59Z",
+            ),
+        ]
+    client.get_markets.return_value = (markets, None)
+    return client
+
+
+class TestMarketDiscovery:
+    async def test_auto_discovers_markets_when_none_provided(self) -> None:
+        api = _mock_api_client()
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        assert loop.strategy is not None
+        assert len(loop.strategy.contracts) == 2
+        assert "KXTOPMODEL-GPT5" in loop.strategy.contracts
+        assert "KXTOPMODEL-CLAUDE5" in loop.strategy.contracts
+
+        # Verify contract details were populated
+        gpt5 = loop.strategy.contracts["KXTOPMODEL-GPT5"]
+        assert gpt5.model_name == "GPT-5"
+        assert gpt5.yes_bid == 45
+        assert gpt5.yes_ask == 50
+        assert gpt5.last_price == 48
+
+        await loop.shutdown()
+
+    async def test_explicit_market_data_skips_discovery(self) -> None:
+        api = _mock_api_client()
+        explicit = {
+            "markets": [
+                {"ticker": "MANUAL-1", "subtitle": "ManualModel", "yes_bid": 10, "yes_ask": 15, "last_price": 12}
+            ]
+        }
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=explicit, api_client=api)
+
+        assert loop.strategy is not None
+        assert "MANUAL-1" in loop.strategy.contracts
+        # API should NOT have been called for discovery
+        api.get_markets.assert_not_called()
+
+        await loop.shutdown()
+
+    async def test_discovery_survives_api_failure(self) -> None:
+        api = MagicMock(spec=KalshiAPIClient)
+        api.get_markets.side_effect = KalshiAPIError("Connection refused", status_code=503)
+
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        # Should initialize with no contracts rather than crash
+        assert loop.strategy is not None
+        assert len(loop.strategy.contracts) == 0
+
+        await loop.shutdown()
+
+    async def test_discovery_queries_all_target_series(self) -> None:
+        api = _mock_api_client(markets=[])
+        config = _config()
+        config.leaderboard_alpha.target_series = ["KXTOPMODEL", "KXLLM1"]
+        loop = TradingLoop(config)
+        await loop.initialize(api_client=api)
+
+        # Should have queried both series
+        assert api.get_markets.call_count == 2
+        calls = [c.kwargs for c in api.get_markets.call_args_list]
+        queried_series = {c["series_ticker"] for c in calls}
+        assert queried_series == {"KXTOPMODEL", "KXLLM1"}
+
+        await loop.shutdown()
+
+    async def test_bootstrap_failure_is_graceful(self) -> None:
+        loop = TradingLoop(_config())
+        # Patch _bootstrap_market_data to simulate API failure
+        with patch.object(TradingLoop, "_bootstrap_market_data", return_value={"markets": []}):
+            await loop.initialize()
+
+        # Should still start — just with no contracts
+        assert loop.strategy is not None
+        assert len(loop.strategy.contracts) == 0
+
+        await loop.shutdown()
+
+    async def test_discovered_contracts_receive_signals(self) -> None:
+        """End-to-end: discovered contracts can match arena signals to tickers."""
+        api = _mock_api_client()
+        loop = TradingLoop(_config())
+        await loop.initialize(api_client=api)
+
+        assert loop._monitor is not None
+        # Simulate a ranking_change signal for GPT-5 moving to #1
+        sig = Signal(
+            source="arena_monitor",
+            timestamp=datetime.datetime(2026, 3, 1, 12, 0, 0),
+            event_type="ranking_change",
+            data={
+                "model_name": "GPT-5",
+                "old_rank_ub": 3,
+                "new_rank_ub": 1,
+                "rank": 1,
+                "rank_ub": 1,
+                "score": 1300.0,
+            },
+            relevant_series=["KXTOPMODEL"],
+            urgency=SignalUrgency.HIGH,
+        )
+        loop._monitor.poll = AsyncMock(return_value=[sig])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        # Strategy should have generated a proposal and the engine should have orders
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) > 0
+
+        # Verify the order targets the right contract
+        order = list(loop.execution_engine.orders.values())[0]
+        assert order.ticker == "KXTOPMODEL-GPT5"
+        assert order.side == "yes"
+
+        await loop.shutdown()
+
+    async def test_market_info_to_dict(self) -> None:
+        m = MarketInfo(
+            ticker="T1",
+            event_ticker="E1",
+            series_ticker="S1",
+            title="Title",
+            subtitle="Sub",
+            status="open",
+            yes_bid=40,
+            yes_ask=45,
+            no_bid=55,
+            no_ask=60,
+            last_price=42,
+            volume=100,
+            volume_24h=50,
+            open_time="2026-01-01",
+            close_time="2026-12-31",
+            expiration_time="2026-12-31",
+        )
+        d = TradingLoop._market_info_to_dict(m)
+        assert d["ticker"] == "T1"
+        assert d["subtitle"] == "Sub"
+        assert d["yes_bid"] == 40
+        assert d["yes_ask"] == 45
+        assert d["last_price"] == 42

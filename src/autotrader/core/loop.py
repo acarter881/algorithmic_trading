@@ -62,6 +62,7 @@ class TradingLoop:
         self._engine: ExecutionEngine | None = None
         self._repo: TradingRepository | None = None
         self._alerter: DiscordAlerter | None = None
+        self._api_client: KalshiAPIClient | None = None
         self._market_data_client: KalshiAPIClient | None = None
         self._fee_calc = FeeCalculator()
         self._ticker_event_map: dict[str, str] = {}
@@ -72,11 +73,30 @@ class TradingLoop:
         self,
         market_data: dict[str, Any] | None = None,
         session_factory: sessionmaker[Session] | None = None,
+        api_client: KalshiAPIClient | None = None,
     ) -> None:
-        """Create and initialize all components."""
+        """Create and initialize all components.
+
+        If *market_data* is not provided, the loop will attempt to
+        discover tradable markets from the Kalshi API for each series
+        in the strategy's ``target_series`` list.  If discovery fails
+        (e.g. missing credentials), the loop starts with no contracts
+        and logs a warning.
+
+        An *api_client* may be injected for testing; otherwise one is
+        created from the application config.
+        """
         # Arena monitor
         self._monitor = ArenaMonitor(config=self._config.arena_monitor)
         await self._monitor.initialize()
+
+        # Kalshi API client — used for market discovery and live execution.
+        # When injected (e.g. in tests), it is used directly for discovery.
+        self._api_client = api_client
+
+        # Auto-discover markets when none are provided
+        if market_data is None and self._api_client is not None:
+            market_data = self._discover_markets(self._api_client)
 
         # Strategy
         self._strategy = LeaderboardAlphaStrategy(
@@ -122,10 +142,12 @@ class TradingLoop:
         # Execution engine
         mode = ExecutionMode.PAPER if is_paper_mode else ExecutionMode.LIVE
         if mode == ExecutionMode.LIVE:
-            client = KalshiAPIClient(self._config.kalshi)
-            private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
-            client.connect(private_key_pem=private_key_pem)
-            self._engine = ExecutionEngine(mode=mode, api_client=client, fee_calculator=self._fee_calc)
+            live_client = self._api_client
+            if live_client is None:
+                live_client = KalshiAPIClient(self._config.kalshi)
+                private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+                live_client.connect(private_key_pem=private_key_pem)
+            self._engine = ExecutionEngine(mode=mode, api_client=live_client, fee_calculator=self._fee_calc)
         else:
             self._engine = ExecutionEngine(mode=mode, fee_calculator=self._fee_calc)
 
@@ -137,12 +159,24 @@ class TradingLoop:
             mode=mode.value,
             poll_interval=self._config.arena_monitor.poll_interval_seconds,
             target_series=self._config.leaderboard_alpha.target_series,
+            contracts_loaded=len(self._strategy.contracts),
             persistence=self._repo is not None,
             discord=self._alerter.enabled,
         )
 
+        if not self._strategy.contracts:
+            logger.warning(
+                "no_tradable_markets_loaded",
+                target_series=self._config.leaderboard_alpha.target_series,
+                hint="Check API credentials and that target series have open markets",
+            )
+
         # Record startup event
-        self._persist_system_event("startup", {"mode": mode.value}, "info")
+        self._persist_system_event(
+            "startup",
+            {"mode": mode.value, "contracts_loaded": len(self._strategy.contracts)},
+            "info",
+        )
         await self._send_system_alert("Autotrader Started", f"Mode: {mode.value}")
 
     async def _validate_startup_markets(self, *, is_paper_mode: bool) -> None:
@@ -292,6 +326,61 @@ class TradingLoop:
     @property
     def alerter(self) -> DiscordAlerter | None:
         return self._alerter
+
+    # ── Market discovery ────────────────────────────────────────────────
+
+    def _discover_markets(self, api: KalshiAPIClient) -> dict[str, Any]:
+        """Discover open markets for every series in ``target_series``.
+
+        Returns a dict in the shape the strategy expects::
+
+            {"markets": [{"ticker": ..., "subtitle": ..., ...}, ...]}
+        """
+        target_series = self._config.leaderboard_alpha.target_series
+        all_markets: list[dict[str, Any]] = []
+
+        for series in target_series:
+            try:
+                series_markets: list[MarketInfo] = []
+                cursor: str | None = None
+                while True:
+                    page, cursor = api.get_markets(
+                        series_ticker=series,
+                        status="open",
+                        limit=200,
+                        cursor=cursor,
+                    )
+                    series_markets.extend(page)
+                    if not cursor or not page:
+                        break
+                for m in series_markets:
+                    all_markets.append(self._market_info_to_dict(m))
+                logger.info(
+                    "markets_discovered",
+                    series=series,
+                    count=len(series_markets),
+                    tickers=[m.ticker for m in series_markets],
+                )
+            except Exception:
+                logger.warning("market_discovery_failed", series=series)
+
+        logger.info("market_discovery_complete", total=len(all_markets))
+        return {"markets": all_markets}
+
+    @staticmethod
+    def _market_info_to_dict(m: MarketInfo) -> dict[str, Any]:
+        """Convert a :class:`MarketInfo` to the dict format the strategy expects."""
+        return {
+            "ticker": m.ticker,
+            "event_ticker": m.event_ticker,
+            "series_ticker": m.series_ticker,
+            "title": m.title,
+            "subtitle": m.subtitle,
+            "status": m.status,
+            "yes_bid": m.yes_bid,
+            "yes_ask": m.yes_ask,
+            "last_price": m.last_price,
+        }
 
     # ── Core tick ─────────────────────────────────────────────────────
 
