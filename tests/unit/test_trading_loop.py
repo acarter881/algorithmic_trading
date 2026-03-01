@@ -1461,3 +1461,187 @@ class TestPositionReconciliation:
         # No API client — reconciliation should be a no-op
         await loop._reconcile_positions()
         await loop.shutdown()
+
+
+# ── WebSocket streaming ──────────────────────────────────────────────────
+
+
+def _ws_config(websocket_enabled: bool = True) -> AppConfig:
+    return AppConfig(
+        kalshi=KalshiConfig(websocket_enabled=websocket_enabled),
+        arena_monitor=ArenaMonitorConfig(poll_interval_seconds=1),
+        leaderboard_alpha=LeaderboardAlphaConfig(target_series=["KXTOPMODEL"]),
+    )
+
+
+class TestWebSocketIntegration:
+    async def test_ws_client_created_when_enabled(self) -> None:
+        loop = TradingLoop(_ws_config(websocket_enabled=True))
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+        await loop.shutdown()
+
+    async def test_ws_client_not_created_when_disabled(self) -> None:
+        loop = TradingLoop(_ws_config(websocket_enabled=False))
+        market_data = {"markets": [{"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45}]}
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is None
+        await loop.shutdown()
+
+    async def test_ws_ticker_updates_strategy_prices(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+
+        # Simulate a WebSocket ticker message
+        ws_message = {
+            "type": "ticker",
+            "sid": 1,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "KXTOPMODEL-T1",
+                "yes_bid": 55,
+                "yes_ask": 60,
+                "last_price": 58,
+            },
+        }
+        await loop._on_ws_ticker(ws_message)
+
+        contract = loop.strategy.contracts["KXTOPMODEL-T1"]
+        assert contract.yes_bid == 55
+        assert contract.yes_ask == 60
+        assert contract.last_price == 58
+        await loop.shutdown()
+
+    async def test_ws_ticker_ignores_unknown_tickers(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+
+        # Message for a ticker not in strategy — should be silently ignored
+        ws_message = {
+            "type": "ticker",
+            "sid": 1,
+            "seq": 1,
+            "msg": {"market_ticker": "UNKNOWN-TICKER", "yes_bid": 99},
+        }
+        await loop._on_ws_ticker(ws_message)
+
+        # Original contract unchanged
+        contract = loop.strategy.contracts["KXTOPMODEL-T1"]
+        assert contract.yes_bid == 40
+        await loop.shutdown()
+
+    async def test_rest_polling_skipped_when_ws_connected(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+
+        # Mock the market data client and simulate WS connected state
+        loop._market_data_client = MagicMock()
+        loop._ws_client._connected = True
+
+        await loop._refresh_market_data()
+
+        # REST client should NOT have been called
+        loop._market_data_client.get_market.assert_not_called()
+        await loop.shutdown()
+
+    async def test_rest_polling_used_when_ws_disconnected(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+
+        # Mock the market data client, WS not connected
+        mock_market = MagicMock()
+        mock_market.yes_bid = 55
+        mock_market.yes_ask = 60
+        mock_market.last_price = 58
+        mock_market.event_ticker = "KXTOPMODEL"
+        loop._market_data_client = MagicMock()
+        loop._market_data_client.get_market.return_value = mock_market
+        loop._ws_client._connected = False
+
+        await loop._refresh_market_data()
+
+        # REST client SHOULD have been called as fallback
+        loop._market_data_client.get_market.assert_called()
+        await loop.shutdown()
+
+    async def test_ws_fill_routes_to_fill_callback(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.strategy is not None
+
+        # Simulate a WebSocket fill message
+        ws_message = {
+            "type": "fill",
+            "sid": 2,
+            "seq": 1,
+            "msg": {
+                "ticker": "KXTOPMODEL-T1",
+                "side": "yes",
+                "action": "buy",
+                "count": 3,
+                "client_order_id": "leaderboard_alpha-test-123",
+            },
+        }
+        await loop._on_ws_fill(ws_message)
+
+        # _on_fill schedules strategy.on_fill via create_task; yield to let it run
+        await asyncio.sleep(0)
+
+        # Strategy position should reflect the fill
+        contract = loop.strategy.contracts["KXTOPMODEL-T1"]
+        assert contract.position == 3
+        await loop.shutdown()
+
+    async def test_start_stop_websocket(self) -> None:
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+
+        # Mock the connect method so it doesn't actually connect
+        loop._ws_client.connect = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._start_websocket()
+        assert loop._ws_task is not None
+
+        await loop._stop_websocket()
+        assert loop._ws_task is None
+        await loop.shutdown()

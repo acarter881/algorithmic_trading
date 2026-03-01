@@ -24,6 +24,7 @@ class KalshiConfig(BaseModel):
     demo_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
     production_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     websocket_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    websocket_enabled: bool = False
     request_timeout_seconds: float = 30.0
     max_retries: int = 3
     rate_limit_buffer_pct: float = 0.1

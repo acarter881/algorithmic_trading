@@ -16,12 +16,14 @@ and supports graceful shutdown via :meth:`stop`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from autotrader.api.client import KalshiAPIClient, MarketInfo
+from autotrader.api.websocket import Channel, KalshiWebSocketClient
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode
 from autotrader.monitoring.discord import DiscordAlerter
 from autotrader.risk.manager import PortfolioSnapshot, PositionInfo, RiskManager
@@ -64,6 +66,8 @@ class TradingLoop:
         self._alerter: DiscordAlerter | None = None
         self._api_client: KalshiAPIClient | None = None
         self._market_data_client: KalshiAPIClient | None = None
+        self._ws_client: KalshiWebSocketClient | None = None
+        self._ws_task: asyncio.Task[None] | None = None
         self._fee_calc = FeeCalculator()
         self._ticker_event_map: dict[str, str] = {}
 
@@ -153,6 +157,10 @@ class TradingLoop:
 
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)
+
+        # WebSocket client for real-time market data streaming
+        if self._config.kalshi.websocket_enabled:
+            self._init_websocket()
 
         logger.info(
             "trading_loop_initialized",
@@ -279,7 +287,11 @@ class TradingLoop:
             "trading_loop_started",
             interval_seconds=interval,
             reconcile_every_ticks=ticks_per_reconcile or "disabled",
+            websocket=self._ws_client is not None,
         )
+
+        # Start WebSocket streaming in the background (if configured).
+        await self._start_websocket()
 
         # Reconcile on startup so that positions are accurate from tick 1.
         await self._reconcile_positions()
@@ -289,6 +301,9 @@ class TradingLoop:
             if ticks_per_reconcile and self._tick_count % ticks_per_reconcile == 0:
                 await self._reconcile_positions()
             await asyncio.sleep(interval)
+
+        # Stop WebSocket when the loop exits.
+        await self._stop_websocket()
 
         logger.info("trading_loop_stopped", total_ticks=self._tick_count)
 
@@ -302,6 +317,7 @@ class TradingLoop:
         self._persist_system_event("shutdown", {"ticks": self._tick_count}, "info")
         await self._send_system_alert("Autotrader Stopped", f"Total ticks: {self._tick_count}")
 
+        await self._stop_websocket()
         if self._monitor:
             await self._monitor.teardown()
         if self._strategy:
@@ -337,6 +353,10 @@ class TradingLoop:
     @property
     def alerter(self) -> DiscordAlerter | None:
         return self._alerter
+
+    @property
+    def ws_client(self) -> KalshiWebSocketClient | None:
+        return self._ws_client
 
     # ── Market discovery ────────────────────────────────────────────────
 
@@ -557,8 +577,16 @@ class TradingLoop:
         await self._send_system_alert("CRITICAL: Arena monitor failure threshold exceeded", message)
 
     async def _refresh_market_data(self) -> None:
-        """Refresh quotes for all strategy-tracked tickers and route into strategy."""
+        """Refresh quotes for all strategy-tracked tickers and route into strategy.
+
+        When WebSocket streaming is active and connected, REST polling is skipped
+        because the ticker channel pushes updates in real time.
+        """
         if self._strategy is None or self._market_data_client is None:
+            return
+
+        # Skip REST polling when WebSocket is streaming prices
+        if self._ws_client is not None and self._ws_client.connected:
             return
 
         for ticker in self._strategy.contracts:
@@ -647,6 +675,83 @@ class TradingLoop:
                 )
         except Exception:
             logger.exception("position_reconciliation_failed", tick=self._tick_count)
+
+    # ── WebSocket streaming ────────────────────────────────────────────
+
+    def _init_websocket(self) -> None:
+        """Create and configure the WebSocket client for real-time streaming."""
+        private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
+        is_demo = self._config.kalshi.environment.value != "production"
+        self._ws_client = KalshiWebSocketClient(
+            api_key_id=self._config.kalshi.api_key_id,
+            private_key_pem=private_key_pem,
+            is_demo=is_demo,
+        )
+
+        # Subscribe to ticker channel for all tracked markets
+        tickers = list(self._strategy.contracts.keys()) if self._strategy else []
+        if tickers:
+            self._ws_client.subscribe(Channel.TICKER, tickers=tickers)
+
+        # Subscribe to private channels when authenticated
+        if self._config.kalshi.api_key_id and private_key_pem:
+            self._ws_client.subscribe(Channel.FILL)
+            self._ws_client.subscribe(Channel.USER_ORDERS)
+
+        # Register message handlers
+        self._ws_client.on_message("ticker", self._on_ws_ticker)
+        self._ws_client.on_message("fill", self._on_ws_fill)
+
+        logger.info(
+            "websocket_initialized",
+            tickers=len(tickers),
+            authenticated=bool(self._config.kalshi.api_key_id and private_key_pem),
+        )
+
+    async def _start_websocket(self) -> None:
+        """Start the WebSocket connection as a background task."""
+        if self._ws_client is None:
+            return
+        self._ws_task = asyncio.create_task(self._ws_client.connect())
+        logger.info("websocket_task_started")
+
+    async def _stop_websocket(self) -> None:
+        """Gracefully disconnect the WebSocket and cancel its task."""
+        if self._ws_client is not None:
+            await self._ws_client.disconnect()
+        if self._ws_task is not None and not self._ws_task.done():
+            self._ws_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_task
+            self._ws_task = None
+        logger.info("websocket_stopped")
+
+    async def _on_ws_ticker(self, message: dict[str, Any]) -> None:
+        """Handle a WebSocket ticker message — route to strategy."""
+        if self._strategy is None:
+            return
+        msg = message.get("msg", {})
+        if not isinstance(msg, dict):
+            return
+        ticker = msg.get("market_ticker", "")
+        if not ticker or ticker not in self._strategy.contracts:
+            return
+        update: dict[str, Any] = {"ticker": ticker}
+        for key in ("yes_bid", "yes_ask", "last_price"):
+            value = msg.get(key)
+            if isinstance(value, int) and value > 0:
+                update[key] = value
+        event_ticker = msg.get("event_ticker")
+        if isinstance(event_ticker, str) and event_ticker:
+            update["event_ticker"] = event_ticker
+            self._ticker_event_map[ticker] = event_ticker
+        await self._strategy.on_market_update(update)
+
+    async def _on_ws_fill(self, message: dict[str, Any]) -> None:
+        """Handle a WebSocket fill message — route to fill callback."""
+        msg = message.get("msg", {})
+        if isinstance(msg, dict):
+            self._on_fill(msg)
 
     # ── Fill callback ─────────────────────────────────────────────────
 
