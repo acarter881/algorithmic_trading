@@ -212,5 +212,112 @@ def pnl(config_dir: str, days: int, strategy: str | None, as_csv: bool) -> None:
     )
 
 
+@cli.command()
+@click.option("--config-dir", default="config", help="Path to configuration directory.")
+@click.option(
+    "--environment",
+    type=click.Choice(["demo", "production"]),
+    default=None,
+    help="Override environment.",
+)
+def preflight(config_dir: str, environment: str | None) -> None:
+    """Run connectivity checks without starting the trading loop."""
+    import os
+
+    from autotrader.config.loader import load_config
+
+    checks_passed = 0
+    checks_failed = 0
+
+    def _pass(name: str, detail: str = "") -> None:
+        nonlocal checks_passed
+        checks_passed += 1
+        msg = f"  PASS  {name}"
+        if detail:
+            msg += f" — {detail}"
+        click.echo(msg)
+
+    def _fail(name: str, detail: str = "") -> None:
+        nonlocal checks_failed
+        checks_failed += 1
+        msg = f"  FAIL  {name}"
+        if detail:
+            msg += f" — {detail}"
+        click.echo(msg)
+
+    click.echo("Preflight checks")
+    click.echo()
+
+    # 1. Configuration
+    try:
+        config = load_config(config_dir=config_dir, environment=environment)
+        _pass("Configuration", f"environment={config.kalshi.environment.value}")
+    except Exception as e:
+        _fail("Configuration", str(e))
+        click.echo(f"\n{checks_passed} passed, {checks_failed} failed")
+        raise SystemExit(1) from e
+
+    # 2. Database
+    try:
+        from sqlalchemy import text
+
+        from autotrader.state.database import create_db_engine, init_db
+
+        db_engine = create_db_engine(url=config.database.url, echo=False)
+        init_db(db_engine)
+        with db_engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        _pass("Database", config.database.url)
+    except Exception as e:
+        _fail("Database", str(e))
+
+    # 3. Kalshi API
+    try:
+        from autotrader.api.client import KalshiAPIClient
+
+        client = KalshiAPIClient(config.kalshi)
+        private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM")
+        client.connect(private_key_pem=private_key_pem)
+        status = client.get_exchange_status()
+        _pass("Kalshi API", f"exchange_active={status.exchange_active}")
+    except Exception as e:
+        _fail("Kalshi API", str(e))
+
+    # 4. Arena monitor
+    try:
+        import httpx
+
+        resp = httpx.get(
+            config.arena_monitor.primary_url,
+            timeout=config.arena_monitor.request_timeout_seconds,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        _pass("Arena monitor", f"status={resp.status_code}")
+    except Exception as e:
+        _fail("Arena monitor", str(e))
+
+    # 5. Discord webhook (if configured)
+    if config.discord.enabled and config.discord.webhook_url:
+        try:
+            import httpx
+
+            # Send a GET to validate the webhook URL (Discord returns webhook info)
+            resp = httpx.get(config.discord.webhook_url, timeout=10)
+            if resp.status_code < 400:
+                _pass("Discord webhook", "reachable")
+            else:
+                _fail("Discord webhook", f"status={resp.status_code}")
+        except Exception as e:
+            _fail("Discord webhook", str(e))
+    else:
+        _pass("Discord webhook", "not configured (skipped)")
+
+    click.echo()
+    click.echo(f"{checks_passed} passed, {checks_failed} failed")
+    if checks_failed > 0:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     cli()
