@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import structlog
@@ -56,8 +57,13 @@ def setup_logging(level: str = "INFO", json_output: bool = True, log_dir: str = 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
 
-    # File handler
-    file_handler = logging.FileHandler(log_path / "autotrader.log")
+    # File handler — rotating to prevent disk exhaustion during 24/7 operation.
+    # 50 MB per file, 5 backups = 300 MB max disk usage for logs.
+    file_handler = RotatingFileHandler(
+        log_path / "autotrader.log",
+        maxBytes=50 * 1024 * 1024,
+        backupCount=5,
+    )
     file_handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()

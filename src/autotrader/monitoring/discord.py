@@ -28,6 +28,8 @@ class DiscordAlerter:
     """
 
     MAX_RETRIES = 3
+    # Cap retry-after to avoid blocking the tick loop for long periods.
+    MAX_RETRY_AFTER_SECONDS = 5.0
 
     def __init__(self, config: DiscordConfig) -> None:
         self._config = config
@@ -130,7 +132,10 @@ class DiscordAlerter:
 
                 # Discord rate-limit: honour Retry-After header
                 if resp.status_code == 429:
-                    retry_after = float(resp.headers.get("Retry-After", "1"))
+                    retry_after = min(
+                        float(resp.headers.get("Retry-After", "1")),
+                        self.MAX_RETRY_AFTER_SECONDS,
+                    )
                     logger.warning(
                         "discord_rate_limited",
                         retry_after=retry_after,

@@ -76,9 +76,10 @@ class TradingRepository:
     # ── Fills ────────────────────────────────────────────────────────
 
     def record_fill(self, fill_data: dict[str, Any], strategy: str) -> None:
-        """Persist a fill event and update daily P&L."""
+        """Persist a fill event and update daily P&L in a single transaction."""
         try:
             with self._session_factory() as session:
+                filled_at = self._parse_filled_at(fill_data.get("filled_at"))
                 row = Fill(
                     order_client_id=fill_data.get("client_order_id", ""),
                     kalshi_fill_id=fill_data.get("kalshi_fill_id"),
@@ -91,14 +92,17 @@ class TradingRepository:
                     is_taker=fill_data.get("is_taker", True),
                     is_paper=fill_data.get("is_paper", True),
                     strategy=strategy,
-                    filled_at=self._parse_filled_at(fill_data.get("filled_at")),
+                    filled_at=filled_at,
                 )
                 session.add(row)
+                # Flush the fill so it's visible to the P&L query below
+                session.flush()
+
+                # Update daily P&L within the same transaction
+                self._update_daily_pnl_in_session(session, fill_data, strategy, filled_at)
+
                 session.commit()
                 logger.debug("fill_persisted", ticker=fill_data["ticker"])
-
-            # Update daily P&L
-            self._update_daily_pnl(fill_data, strategy)
         except Exception:
             logger.exception("fill_persist_error", ticker=fill_data.get("ticker"))
 
@@ -196,53 +200,54 @@ class TradingRepository:
 
     @staticmethod
     def _today_as_datetime() -> datetime.datetime:
-        """Return today at midnight as a datetime (matches the DateTime column type)."""
-        return datetime.datetime.combine(datetime.date.today(), datetime.time())
+        """Return today (UTC) at midnight as a datetime (matches the DateTime column type)."""
+        return datetime.datetime.combine(datetime.datetime.utcnow().date(), datetime.time())
 
-    def _update_daily_pnl(self, fill_data: dict[str, Any], strategy: str) -> None:
-        """Update running daily P&L after a fill."""
-        fill_timestamp = self._parse_filled_at(fill_data.get("filled_at"))
-        day_start = datetime.datetime.combine(fill_timestamp.date(), datetime.time())
+    def _update_daily_pnl_in_session(
+        self,
+        session: Session,
+        fill_data: dict[str, Any],
+        strategy: str,
+        filled_at: datetime.datetime,
+    ) -> None:
+        """Update running daily P&L within an existing session/transaction."""
+        day_start = datetime.datetime.combine(filled_at.date(), datetime.time())
         day_end = day_start + datetime.timedelta(days=1)
-        try:
-            with self._session_factory() as session:
-                row = session.query(DailyPnl).filter(DailyPnl.date == day_start, DailyPnl.strategy == strategy).first()
-                fee_cents = fill_data.get("fee_cents", 0)
-                is_paper = fill_data.get("is_paper", True)
 
-                fills = (
-                    session.query(Fill)
-                    .filter(
-                        Fill.strategy == strategy,
-                        Fill.filled_at >= day_start,
-                        Fill.filled_at < day_end,
-                    )
-                    .order_by(Fill.filled_at.asc(), Fill.id.asc())
-                    .all()
-                )
-                realized_pnl_cents, unrealized_pnl_cents = self._compute_intraday_pnl_from_fills(fills)
+        row = session.query(DailyPnl).filter(DailyPnl.date == day_start, DailyPnl.strategy == strategy).first()
+        fee_cents = fill_data.get("fee_cents", 0)
+        is_paper = fill_data.get("is_paper", True)
 
-                if row is None:
-                    row = DailyPnl(
-                        date=day_start,
-                        strategy=strategy,
-                        realized_pnl_cents=realized_pnl_cents,
-                        unrealized_pnl_cents=unrealized_pnl_cents,
-                        total_fees_cents=fee_cents,
-                        trade_count=1,
-                        is_paper=is_paper,
-                    )
-                    session.add(row)
-                else:
-                    row.realized_pnl_cents = realized_pnl_cents
-                    row.unrealized_pnl_cents = unrealized_pnl_cents
-                    row.total_fees_cents += fee_cents
-                    row.trade_count += 1
+        fills = (
+            session.query(Fill)
+            .filter(
+                Fill.strategy == strategy,
+                Fill.filled_at >= day_start,
+                Fill.filled_at < day_end,
+            )
+            .order_by(Fill.filled_at.asc(), Fill.id.asc())
+            .all()
+        )
+        realized_pnl_cents, unrealized_pnl_cents = self._compute_intraday_pnl_from_fills(fills)
 
-                session.commit()
-                logger.debug("daily_pnl_updated", strategy=strategy, date=str(day_start))
-        except Exception:
-            logger.exception("daily_pnl_update_error", strategy=strategy)
+        if row is None:
+            row = DailyPnl(
+                date=day_start,
+                strategy=strategy,
+                realized_pnl_cents=realized_pnl_cents,
+                unrealized_pnl_cents=unrealized_pnl_cents,
+                total_fees_cents=fee_cents,
+                trade_count=1,
+                is_paper=is_paper,
+            )
+            session.add(row)
+        else:
+            row.realized_pnl_cents = realized_pnl_cents
+            row.unrealized_pnl_cents = unrealized_pnl_cents
+            row.total_fees_cents += fee_cents
+            row.trade_count += 1
+
+        logger.debug("daily_pnl_updated", strategy=strategy, date=str(day_start))
 
     @staticmethod
     def _parse_filled_at(raw_filled_at: Any) -> datetime.datetime:
@@ -351,7 +356,7 @@ class TradingRepository:
     ) -> list[DailyPnl]:
         """Fetch daily P&L rows for the last *days* days, optionally filtered by strategy."""
         cutoff = datetime.datetime.combine(
-            datetime.date.today() - datetime.timedelta(days=days - 1),
+            datetime.datetime.utcnow().date() - datetime.timedelta(days=days - 1),
             datetime.time(),
         )
         try:
@@ -374,7 +379,7 @@ class TradingRepository:
     ) -> list[Fill]:
         """Fetch fill records for the last *days* days."""
         cutoff = datetime.datetime.combine(
-            datetime.date.today() - datetime.timedelta(days=days - 1),
+            datetime.datetime.utcnow().date() - datetime.timedelta(days=days - 1),
             datetime.time(),
         )
         try:

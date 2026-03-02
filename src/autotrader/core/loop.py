@@ -72,6 +72,7 @@ class TradingLoop:
         self._ws_task: asyncio.Task[None] | None = None
         self._fee_calc = FeeCalculator()
         self._ticker_event_map: dict[str, str] = {}
+        self._cached_balance_cents: int | None = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -316,6 +317,7 @@ class TradingLoop:
             await self._tick()
             if ticks_per_reconcile and self._tick_count % ticks_per_reconcile == 0:
                 await self._reconcile_positions()
+            self._check_websocket_health()
             await asyncio.sleep(interval)
 
         # Stop WebSocket when the loop exits.
@@ -335,11 +337,20 @@ class TradingLoop:
 
         await self._stop_websocket()
         if self._monitor:
-            await self._monitor.teardown()
+            try:
+                await self._monitor.teardown()
+            except Exception:
+                logger.exception("monitor_teardown_error")
         for strat in self._strategies.values():
-            await strat.teardown()
+            try:
+                await strat.teardown()
+            except Exception:
+                logger.exception("strategy_teardown_error", strategy=strat.name)
         if self._alerter:
-            await self._alerter.teardown()
+            try:
+                await self._alerter.teardown()
+            except Exception:
+                logger.exception("alerter_teardown_error")
         logger.info("trading_loop_shutdown")
 
     @property
@@ -785,6 +796,26 @@ class TradingLoop:
         self._ws_task = asyncio.create_task(self._ws_client.connect())
         logger.info("websocket_task_started")
 
+    def _check_websocket_health(self) -> None:
+        """Restart the WebSocket task if it died unexpectedly."""
+        if self._ws_task is None or not self._ws_task.done():
+            return
+        exc = self._ws_task.exception() if not self._ws_task.cancelled() else None
+        logger.warning(
+            "websocket_task_died",
+            cancelled=self._ws_task.cancelled(),
+            error=str(exc) if exc else None,
+            tick=self._tick_count,
+        )
+        self._persist_system_event(
+            "websocket_task_died",
+            {"error": str(exc) if exc else "cancelled", "tick": self._tick_count},
+            severity="warning",
+        )
+        # Restart
+        self._ws_task = asyncio.create_task(self._ws_client.connect())  # type: ignore[union-attr]
+        logger.info("websocket_task_restarted", tick=self._tick_count)
+
     async def _stop_websocket(self) -> None:
         """Gracefully disconnect the WebSocket and cancel its task."""
         if self._ws_client is not None:
@@ -854,12 +885,26 @@ class TradingLoop:
         # Run the async on_fill within the event loop
         # (this callback is invoked synchronously by the engine)
         try:
-            loop = asyncio.get_running_loop()
+            ev_loop = asyncio.get_running_loop()
             for strat in target_strategies:
-                loop.create_task(strat.on_fill(fill_data))
+                task = ev_loop.create_task(strat.on_fill(fill_data))
+                task.add_done_callback(self._on_fill_task_done)
         except RuntimeError:
             # No running loop — skip (happens in tests without async context)
             pass
+
+    @staticmethod
+    def _on_fill_task_done(task: asyncio.Task[None]) -> None:
+        """Log any exception from a fire-and-forget fill task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "fill_callback_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
 
     # ── Portfolio snapshot (for risk manager refresh) ─────────────────
 
@@ -930,14 +975,25 @@ class TradingLoop:
     def _current_balance_cents(self) -> int:
         """Best-effort account balance lookup.
 
-        Live mode uses the exchange API. Paper mode falls back to a configurable
-        notional account balance.
+        Live mode uses the exchange API.  On failure, returns the last known
+        good balance so that a transient API hiccup doesn't trip the portfolio
+        exposure check and block all trading.  Paper mode falls back to a
+        configurable notional account balance.
         """
         if self._engine and self._engine.mode == ExecutionMode.LIVE and self._engine._api is not None:
             try:
-                return self._engine._api.get_balance().balance
+                balance = self._engine._api.get_balance().balance
+                self._cached_balance_cents = balance
+                return balance
             except Exception:
-                logger.warning("balance_fetch_failed", tick=self._tick_count)
+                if self._cached_balance_cents is not None:
+                    logger.warning(
+                        "balance_fetch_failed_using_cache",
+                        tick=self._tick_count,
+                        cached_balance=self._cached_balance_cents,
+                    )
+                    return self._cached_balance_cents
+                logger.warning("balance_fetch_failed_no_cache", tick=self._tick_count)
                 return 0
 
         try:

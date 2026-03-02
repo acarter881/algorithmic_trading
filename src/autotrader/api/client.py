@@ -146,6 +146,11 @@ class KalshiAPIClient:
     # Status codes that trigger retry
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+    # Maximum seconds to sleep between retries.  The Kalshi SDK is synchronous,
+    # so retries run on the event-loop thread.  Capping the wait avoids blocking
+    # the entire trading loop for long Retry-After values.
+    MAX_RETRY_WAIT_SECONDS = 5
+
     def __init__(self, config: KalshiConfig) -> None:
         self._config = config
         self._client: KalshiClient | None = None
@@ -216,6 +221,7 @@ class KalshiAPIClient:
                                 with contextlib.suppress(ValueError):
                                     retry_after = int(retry_after_str)
                         wait = retry_after if retry_after else max(wait, 2)
+                    wait = min(wait, self.MAX_RETRY_WAIT_SECONDS)
                     logger.warning(
                         "api_call_retrying",
                         method=method_name,
