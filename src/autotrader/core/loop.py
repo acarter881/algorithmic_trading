@@ -482,6 +482,9 @@ class TradingLoop:
             await self._handle_arena_monitor_failure_threshold(failure)
             return
 
+        # Persist leaderboard snapshot every successful poll
+        self._persist_leaderboard_snapshot()
+
         if not signals:
             logger.debug("tick_no_signals", tick=self._tick_count)
             return
@@ -958,6 +961,22 @@ class TradingLoop:
     def _persist_risk_event(self, check_name: str, order_data: dict[str, Any], reason: str) -> None:
         if self._repo:
             self._repo.record_risk_event(check_name, order_data, reason)
+
+    def _persist_leaderboard_snapshot(self) -> None:
+        """Persist the latest leaderboard snapshot to the database."""
+        if not self._repo or not self._monitor:
+            return
+        snapshot = self._monitor.previous_snapshot
+        if snapshot is None:
+            return
+        snapshot_data = self._monitor.snapshot_to_dict(snapshot)
+        self._repo.record_leaderboard_snapshot(
+            snapshot_data=snapshot_data,
+            source_url=snapshot.source_url,
+            model_count=len(snapshot.entries),
+            top_model=snapshot.top_model,
+            top_org=snapshot.top_org,
+        )
 
     def _persist_system_event(
         self, event_type: str, details: dict[str, Any] | None = None, severity: str = "info"
