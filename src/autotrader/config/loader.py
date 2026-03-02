@@ -10,7 +10,6 @@ import yaml
 
 from autotrader.config.models import AppConfig, Environment
 
-
 _LEGACY_ENV_ALIASES = {
     "ENVIRONMENT": "AUTOTRADER__KALSHI__ENVIRONMENT",
     "EXECUTION_MODE": "AUTOTRADER__KALSHI__EXECUTION_MODE",
