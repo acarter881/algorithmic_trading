@@ -94,12 +94,14 @@ By default in Docker, state is persisted under `/data` in the container:
 
 ### Switching from demo to production (exact procedure)
 
-> **Safety first:** production mode places real-money orders. Keep demo mode enabled until you have reviewed strategy behavior and risk limits.
+> **Safety first:** production API access and live order execution are now separate controls.
+> For production API testing, use `AUTOTRADER__KALSHI__ENVIRONMENT=production` with `AUTOTRADER__KALSHI__EXECUTION_MODE=paper`.
 
-1. **Confirm required production credentials are present in `.env`:**
+1. **Confirm required credentials and runtime mode in `.env`:**
    - `AUTOTRADER__KALSHI__API_KEY_ID` (a valid production API key ID)
    - `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` (or Docker-mounted `/keys/kalshi_private_key.pem`)
    - `AUTOTRADER__KALSHI__ENVIRONMENT=production`
+   - `AUTOTRADER__KALSHI__EXECUTION_MODE=paper` (**recommended safe default for production API testing**)
 2. **Verify private key mount and path alignment:**
    - In Docker Compose, the key is mounted as `./kalshi_private_key.pem:/keys/kalshi_private_key.pem:ro`.
    - Ensure `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem`.
@@ -108,24 +110,30 @@ By default in Docker, state is persisted under `/data` in the container:
    docker compose config
    docker compose run --rm autotrader validate-config --config-dir config
    ```
-4. **Start/restart the service in production mode:**
+4. **Start/restart the service:**
    ```bash
    docker compose up -d --build
    ```
-5. **Confirm production mode in startup logs (must match exactly):**
+5. **Confirm production API + paper execution in startup logs:**
    ```bash
    docker compose logs --tail 100 autotrader
    ```
    Required confirmation log fields:
    - `runtime_mode_resolved` with `mode=production` and `api_base_url=https://api.elections.kalshi.com/trade-api/v2`
    - `kalshi_client_connected` with `environment=production` and `base_url=https://api.elections.kalshi.com/trade-api/v2`
+   - execution mode resolved as `paper`
 
-If either log line still reports `demo` or the demo API host, stop immediately with `docker compose down` and fix `.env` before resuming.
+If logs report `demo` unexpectedly, stop immediately with `docker compose down` and fix `.env` before resuming.
 
-6. **After restart, confirm DB persistence target in startup logs:**
+6. **Only after validation, intentionally switch execution to live orders:**
+   - Set `AUTOTRADER__KALSHI__EXECUTION_MODE=live`
+   - Restart with `docker compose up -d --build`
+   - Re-check logs and risk limits before leaving it enabled
+
+7. **After restart, confirm DB persistence target in startup logs:**
    - Verify the configured database URL is the expected persistent path for your mode:
-     - Paper/demo in Docker: `sqlite:////data/autotrader_paper.db`
-     - Production in Docker: `sqlite:////data/autotrader_live.db`
+     - Paper execution in Docker: `sqlite:////data/autotrader_paper.db`
+     - Live execution in Docker: `sqlite:////data/autotrader_live.db`
 
 ### What the logs mean
 
@@ -216,6 +224,7 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 | `AUTOTRADER__KALSHI__API_KEY_ID` | Kalshi API key ID | Yes |
 | `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` | Path to RSA private key `.pem` file | Yes |
 | `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` (paper) or `production` (live) | No (default: `demo`) |
+| `AUTOTRADER__KALSHI__EXECUTION_MODE` | `paper` or `live` order execution mode | No (default: `paper`) |
 | `AUTOTRADER__DISCORD__WEBHOOK_URL` | Discord webhook for alerts | No |
 | `AUTOTRADER__DISCORD__ENABLED` | Enable Discord notifications | No |
 | `AUTOTRADER__DATABASE__URL` | SQLite database path | No |
