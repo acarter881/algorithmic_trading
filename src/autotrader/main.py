@@ -44,6 +44,7 @@ def run(config_dir: str, environment: str | None) -> None:
 
     log = get_logger("autotrader.main")
     effective_environment = config.kalshi.environment.value
+    effective_execution_mode = config.kalshi.execution_mode.value
     effective_base_url = config.kalshi.base_url
 
     log.info(
@@ -53,7 +54,8 @@ def run(config_dir: str, environment: str | None) -> None:
     )
     log.info(
         "runtime_mode_resolved",
-        mode=effective_environment,
+        environment=effective_environment,
+        execution_mode=effective_execution_mode,
         api_base_url=effective_base_url,
     )
 
@@ -72,6 +74,7 @@ def run(config_dir: str, environment: str | None) -> None:
 
     click.echo(f"Kalshi Autotrader v{__version__}")
     click.echo(f"Environment: {effective_environment}")
+    click.echo(f"Execution mode: {effective_execution_mode}")
     click.echo(f"Kalshi API base URL: {effective_base_url}")
     click.echo(f"Database: {config.database.url}")
 
