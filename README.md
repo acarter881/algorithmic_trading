@@ -6,7 +6,7 @@ Automated trading system for Kalshi prediction markets, focused on AI model lead
 
 This system monitors the [LMSYS Chatbot Arena](https://arena.ai) leaderboard and trades Kalshi prediction market contracts based on detected price dislocations. The primary edge comes from reacting faster and more accurately than manual traders when leaderboard data changes.
 
-**Warning:** Automated trading carries real financial risk. This system defaults to demo/paper trading mode. Do not connect to production with real capital without reviewing performance data.
+**Warning:** Automated trading carries real financial risk. This system defaults to paper execution mode (simulated fills, no real orders). Do not switch to live execution without reviewing performance data from an extended paper trading run.
 
 ## Data Source
 
@@ -61,8 +61,20 @@ cp .env.example .env
 
 # 2. Place your Kalshi private key in the project root
 cp /path/to/your/private_key.pem ./kalshi_private_key.pem
+```
 
-# 3. Build and start (paper trading by default)
+**Required `.env` settings for paper trading:**
+```
+AUTOTRADER__KALSHI__API_KEY_ID=<your production API key ID>
+AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem
+AUTOTRADER__KALSHI__ENVIRONMENT=production
+AUTOTRADER__KALSHI__EXECUTION_MODE=paper
+```
+
+> **Why `production` environment?** Kalshi's demo API has no active markets for the series this autotrader targets (KXTOPMODEL, KXLLM1). Paper trading uses the production API (real market data, real prices) but simulates fills locally — no orders are sent to the exchange.
+
+```bash
+# 3. Build and start (paper trading)
 docker compose up -d --build
 ```
 
@@ -89,51 +101,82 @@ The Docker container runs in the background — you do not need to keep Docker D
 
 By default in Docker, state is persisted under `/data` in the container:
 
-- Paper/demo mode default DB URL: `sqlite:////data/autotrader_paper.db`
-- Live/production mode default DB URL: `sqlite:////data/autotrader_live.db` (when production mode is enabled)
+- Paper execution mode DB: `sqlite:////data/autotrader_paper.db`
+- Live execution mode DB: `sqlite:////data/autotrader_live.db`
 
-### Switching from demo to production (exact procedure)
+### Paper trading startup checklist
 
-> **Safety first:** production API access and live order execution are now separate controls.
-> For production API testing, use `AUTOTRADER__KALSHI__ENVIRONMENT=production` with `AUTOTRADER__KALSHI__EXECUTION_MODE=paper`.
+Before running 24/7, walk through these steps once:
 
-1. **Confirm required credentials and runtime mode in `.env`:**
-   - `AUTOTRADER__KALSHI__API_KEY_ID` (a valid production API key ID)
-   - `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` (or Docker-mounted `/keys/kalshi_private_key.pem`)
-   - `AUTOTRADER__KALSHI__ENVIRONMENT=production`
-   - `AUTOTRADER__KALSHI__EXECUTION_MODE=paper` (**recommended safe default for production API testing**)
-2. **Verify private key mount and path alignment:**
-   - In Docker Compose, the key is mounted as `./kalshi_private_key.pem:/keys/kalshi_private_key.pem:ro`.
-   - Ensure `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem`.
-3. **Run a preflight sanity check before starting trading:**
-   ```bash
-   docker compose config
-   docker compose run --rm autotrader validate-config --config-dir config
+1. **Verify `.env` credentials and mode:**
    ```
-4. **Start/restart the service:**
+   AUTOTRADER__KALSHI__API_KEY_ID=<your key>
+   AUTOTRADER__KALSHI__PRIVATE_KEY_PATH=/keys/kalshi_private_key.pem
+   AUTOTRADER__KALSHI__ENVIRONMENT=production
+   AUTOTRADER__KALSHI__EXECUTION_MODE=paper
+   ```
+2. **Verify private key mount:**
+   - Docker Compose mounts `./kalshi_private_key.pem:/keys/kalshi_private_key.pem:ro`.
+   - The `PRIVATE_KEY_PATH` in `.env` must match the container path (`/keys/kalshi_private_key.pem`).
+3. **Run preflight to validate all connections:**
+   ```bash
+   docker compose run --rm autotrader preflight --config-dir config
+   ```
+   This checks: config validity, DB init, Kalshi API authentication, Arena leaderboard reachability, and Discord webhook (if configured). All checks should pass before continuing.
+4. **Start the service:**
    ```bash
    docker compose up -d --build
    ```
-5. **Confirm production API + paper execution in startup logs:**
+5. **Confirm startup logs show the correct mode:**
    ```bash
    docker compose logs --tail 100 autotrader
    ```
-   Required confirmation log fields:
-   - `runtime_mode_resolved` with `mode=production` and `api_base_url=https://api.elections.kalshi.com/trade-api/v2`
-   - `kalshi_client_connected` with `environment=production` and `base_url=https://api.elections.kalshi.com/trade-api/v2`
-   - execution mode resolved as `paper`
+   Required confirmation:
+   - `runtime_mode_resolved` with `environment=production` and `api_base_url=https://api.elections.kalshi.com/trade-api/v2`
+   - `kalshi_client_connected` with `environment=production`
+   - execution mode = `paper`
+   - database URL = `sqlite:////data/autotrader_paper.db`
 
-If logs report `demo` unexpectedly, stop immediately with `docker compose down` and fix `.env` before resuming.
+   If any field is unexpected, stop immediately with `docker compose down` and fix `.env`.
 
-6. **Only after validation, intentionally switch execution to live orders:**
-   - Set `AUTOTRADER__KALSHI__EXECUTION_MODE=live`
-   - Restart with `docker compose up -d --build`
-   - Re-check logs and risk limits before leaving it enabled
+6. **Monitor the first few hours** — you should see:
+   - `arena_leaderboard_fetched` every ~30 seconds (healthy polling)
+   - `tick_no_signals` on quiet ticks (no leaderboard changes — this is normal)
+   - On any actual leaderboard change: `signal_generated` → `proposals_generated` → `paper_order_filled` or `order_rejected`
 
-7. **After restart, confirm DB persistence target in startup logs:**
-   - Verify the configured database URL is the expected persistent path for your mode:
-     - Paper execution in Docker: `sqlite:////data/autotrader_paper.db`
-     - Live execution in Docker: `sqlite:////data/autotrader_live.db`
+7. **Run paper trading for days to weeks** before considering live execution. Use the hardening checklist below to track readiness.
+
+### Switching from paper to live execution
+
+> **Safety first:** only change `EXECUTION_MODE` after an extended paper trading run. Consider starting with reduced position limits.
+
+1. **Review paper trading results:**
+   ```bash
+   docker compose exec autotrader autotrader pnl --config-dir config --days 30
+   ```
+   Cross-reference fills in the local DB against trades shown on [kalshi.com](https://kalshi.com) (your production account).
+
+2. **Optionally reduce risk limits** in `config/risk.yaml` for the initial live period:
+   ```yaml
+   per_strategy:
+     leaderboard_alpha:
+       max_position_per_contract: 10   # Start small
+       max_position_per_event: 25
+   ```
+
+3. **Switch execution mode in `.env`:**
+   ```
+   AUTOTRADER__KALSHI__EXECUTION_MODE=live
+   ```
+
+4. **Restart and verify:**
+   ```bash
+   docker compose up -d --build
+   docker compose logs --tail 100 autotrader
+   ```
+   Confirm: execution mode = `live`, database URL = `sqlite:////data/autotrader_live.db`.
+
+5. **Monitor intensely for the first day.** Scale limits back up gradually as confidence builds.
 
 ### What the logs mean
 
@@ -148,23 +191,20 @@ If logs report `demo` unexpectedly, stop immediately with `docker compose down` 
 
 All orders, fills, positions, and daily P&L are recorded to SQLite. The default DB URL depends on how you run the service:
 
-- **Docker paper/demo mode:** `sqlite:////data/autotrader_paper.db`
-- **Docker production mode:** `sqlite:////data/autotrader_live.db` (when production is enabled)
+- **Docker paper mode:** `sqlite:////data/autotrader_paper.db`
+- **Docker live mode:** `sqlite:////data/autotrader_live.db`
 - **Local non-Docker CLI runs:** from YAML defaults (`config/base.yaml`, overlaid by `config/paper.yaml` or `config/live.yaml`):
   - base: `sqlite:///autotrader.db`
   - paper overlay: `sqlite:///autotrader_paper.db`
   - live overlay: `sqlite:///autotrader_live.db`
 
-Your primary view of trade activity is the **Kalshi platform itself**:
+**Paper mode:** Paper fills are simulated locally — no orders are sent to Kalshi, so paper trades will **not** appear on the Kalshi website. Review paper trades via the local SQLite database or the `autotrader pnl` CLI command.
 
-- **Demo**: Log in at [demo.kalshi.com](https://demo.kalshi.com) to see paper-trade positions, fills, and P&L.
-- **Production**: Log in at [kalshi.com](https://kalshi.com) to see live positions, fills, and P&L.
-
-The two relevant event pages on Kalshi:
+**Live mode:** Real orders are sent to Kalshi. Log in at [kalshi.com](https://kalshi.com) to see live positions, fills, and P&L. The two relevant event pages:
 - **KXTOPMODEL** — per-model contracts on which AI model will be ranked #1
 - **KXLLM1** — per-organization contracts on which AI org will lead
 
-If Discord alerts are configured, you will also receive real-time notifications for trades, signals, and errors.
+If Discord alerts are configured, you will also receive real-time notifications for trades, signals, and errors in both modes.
 
 ### Where is my DB?
 
@@ -207,15 +247,17 @@ autotrader run --config-dir config
 
 ## Configuration
 
-Configuration is loaded in layers:
+Configuration is loaded in layers (later values override earlier):
 1. `config/base.yaml` — defaults
-2. `config/paper.yaml` (demo) or `config/live.yaml` (production) — environment overlay
+2. `config/paper.yaml` or `config/live.yaml` — environment overlay (selected by `ENVIRONMENT`: `demo` → `paper.yaml`, `production` → `live.yaml`)
 3. `config/strategies/*.yaml` — strategy parameters
 4. `config/risk.yaml` — risk limits
 5. `config/signal_sources/*.yaml` — signal source parameters
-6. Environment variables (`AUTOTRADER__SECTION__KEY`) — highest precedence
+6. Environment variables (`AUTOTRADER__SECTION__KEY`) — **highest precedence, always wins**
 
 Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
+
+> **Note:** When running `ENVIRONMENT=production` with `EXECUTION_MODE=paper`, the loader picks `config/live.yaml` at step 2 (which sets `execution_mode: live`), but your `.env` override at step 6 sets it back to `paper`. This is the intended behavior — env vars always take precedence over YAML files.
 
 ### Environment Variables
 
@@ -223,8 +265,8 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 |----------|-------------|----------|
 | `AUTOTRADER__KALSHI__API_KEY_ID` | Kalshi API key ID | Yes |
 | `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` | Path to RSA private key `.pem` file | Yes |
-| `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` (paper) or `production` (live) | No (default: `demo`) |
-| `AUTOTRADER__KALSHI__EXECUTION_MODE` | `paper` or `live` order execution mode | No (default: `paper`) |
+| `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` or `production` — controls which Kalshi API endpoint is used | No (default: `demo`) |
+| `AUTOTRADER__KALSHI__EXECUTION_MODE` | `paper` (simulated fills) or `live` (real orders) — independent of environment | No (default: `paper`) |
 | `AUTOTRADER__DISCORD__WEBHOOK_URL` | Discord webhook for alerts | No |
 | `AUTOTRADER__DISCORD__ENABLED` | Enable Discord notifications | No |
 | `AUTOTRADER__DATABASE__URL` | SQLite database path | No |
@@ -239,7 +281,7 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 
 ## Paper-Trading Hardening Checklist
 
-Use this checklist before promoting from demo/paper trading to production:
+Use this checklist before switching from paper execution to live execution:
 
 - **Data quality**
   - Arena fetch success rate is stable across primary/fallback URLs.
@@ -270,7 +312,7 @@ Use this checklist before promoting from demo/paper trading to production:
 | `autotrader calc-fee <price> <qty>` | Calculate taker/maker fees for a trade |
 | `autotrader replay <signals.json>` | Replay historical signals through the strategy for backtesting |
 
-All commands accept `--config-dir` (default: `config`). `run` and `preflight` also accept `--environment demo|production`.
+Most commands accept `--config-dir` (default: `config`). `run` and `preflight` also accept `--environment demo|production`. `calc-fee` is standalone and does not require configuration.
 
 ## Backtesting
 
