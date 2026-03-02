@@ -10,6 +10,11 @@ import yaml
 
 from autotrader.config.models import AppConfig, Environment
 
+_LEGACY_ENV_ALIASES = {
+    "ENVIRONMENT": "AUTOTRADER__KALSHI__ENVIRONMENT",
+    "EXECUTION_MODE": "AUTOTRADER__KALSHI__EXECUTION_MODE",
+}
+
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge override dict into base dict. Override values win."""
@@ -39,7 +44,14 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     Example: AUTOTRADER__KALSHI__ENVIRONMENT=production
     """
     prefix = "AUTOTRADER__"
-    for key, value in os.environ.items():
+    env_vars = dict(os.environ)
+
+    # Backward compatibility for legacy flat environment variable names.
+    for legacy_key, namespaced_key in _LEGACY_ENV_ALIASES.items():
+        if namespaced_key not in env_vars and legacy_key in env_vars:
+            env_vars[namespaced_key] = env_vars[legacy_key]
+
+    for key, value in env_vars.items():
         if not key.startswith(prefix):
             continue
         parts = key[len(prefix) :].lower().split("__")
@@ -73,7 +85,10 @@ def load_config(
     config_dir = Path(config_dir)
 
     # Determine environment
-    env = environment or os.environ.get("AUTOTRADER__KALSHI__ENVIRONMENT", "demo")
+    env_vars = dict(os.environ)
+    if "AUTOTRADER__KALSHI__ENVIRONMENT" not in env_vars and "ENVIRONMENT" in env_vars:
+        env_vars["AUTOTRADER__KALSHI__ENVIRONMENT"] = env_vars["ENVIRONMENT"]
+    env = environment or env_vars.get("AUTOTRADER__KALSHI__ENVIRONMENT", "demo")
 
     # Layer 1: base config
     data = _load_yaml(config_dir / "base.yaml")
