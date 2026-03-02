@@ -126,6 +126,10 @@ class ExecutionEngine:
         self._fill_callbacks: list[FillCallback] = []
         self._orders: dict[str, TrackedOrder] = {}  # client_order_id → TrackedOrder
 
+        # Terminal orders older than this many entries are evicted to prevent
+        # unbounded memory growth during long-running 24/7 operation.
+        self._max_terminal_orders = 500
+
         if mode == ExecutionMode.LIVE and api_client is None:
             raise ValueError("Live mode requires an api_client")
 
@@ -172,8 +176,11 @@ class ExecutionEngine:
         self._orders[client_order_id] = tracked
 
         if self._mode == ExecutionMode.PAPER:
-            return self._execute_paper(tracked)
-        return self._execute_live(tracked)
+            result = self._execute_paper(tracked)
+        else:
+            result = self._execute_live(tracked)
+        self._evict_terminal_orders()
+        return result
 
     async def submit_batch(self, orders: list[ProposedOrder]) -> list[ExecutionResult]:
         """Submit multiple orders. Returns results in the same order."""
@@ -342,6 +349,21 @@ class ExecutionEngine:
         """Generate a unique client order ID."""
         short_uuid = uuid.uuid4().hex[:12]
         return f"{proposed.strategy}-{proposed.ticker}-{short_uuid}"
+
+    _TERMINAL_STATUSES = frozenset({OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED})
+
+    def _evict_terminal_orders(self) -> None:
+        """Remove old terminal orders to prevent unbounded memory growth."""
+        terminal = [
+            oid for oid, o in self._orders.items() if o.status in self._TERMINAL_STATUSES
+        ]
+        excess = len(terminal) - self._max_terminal_orders
+        if excess <= 0:
+            return
+        # Sort by updated_at so we evict the oldest first
+        terminal.sort(key=lambda oid: self._orders[oid].updated_at)
+        for oid in terminal[:excess]:
+            del self._orders[oid]
 
     def _emit_fill(self, fill: FillEvent) -> None:
         """Notify all registered callbacks of a fill."""

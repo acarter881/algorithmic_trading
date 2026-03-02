@@ -95,7 +95,7 @@ class Fill(Base):
     fee_cents: Mapped[int] = mapped_column(Integer, default=0)
     is_taker: Mapped[bool] = mapped_column(Boolean, default=True)
     is_paper: Mapped[bool] = mapped_column(Boolean, default=True)
-    strategy: Mapped[str] = mapped_column(String(64))
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
     filled_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (Index("ix_fills_ticker_filled", "ticker", "filled_at"),)
