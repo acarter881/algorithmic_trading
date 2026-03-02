@@ -175,10 +175,7 @@ class ExecutionEngine:
         )
         self._orders[client_order_id] = tracked
 
-        if self._mode == ExecutionMode.PAPER:
-            result = self._execute_paper(tracked)
-        else:
-            result = self._execute_live(tracked)
+        result = self._execute_paper(tracked) if self._mode == ExecutionMode.PAPER else self._execute_live(tracked)
         self._evict_terminal_orders()
         return result
 
