@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
     from autotrader.config.models import AppConfig
+    from autotrader.signals.arena_types import LeaderboardSnapshot
     from autotrader.strategies.base import ProposedOrder, Strategy
 
 logger = structlog.get_logger("autotrader.core.loop")
@@ -476,14 +477,17 @@ class TradingLoop:
         await self._refresh_market_data()
 
         # 1. Poll for signals
+        prev_snapshot = self._monitor.previous_snapshot
         try:
             signals = await self._monitor.poll()
         except ArenaMonitorFailureThresholdError as failure:
             await self._handle_arena_monitor_failure_threshold(failure)
             return
 
-        # Persist leaderboard snapshot every successful poll
-        self._persist_leaderboard_snapshot()
+        # Persist leaderboard snapshot only when a new one was fetched
+        new_snapshot = self._monitor.previous_snapshot
+        if new_snapshot is not None and new_snapshot is not prev_snapshot:
+            self._persist_leaderboard_snapshot(new_snapshot)
 
         if not signals:
             logger.debug("tick_no_signals", tick=self._tick_count)
@@ -962,12 +966,9 @@ class TradingLoop:
         if self._repo:
             self._repo.record_risk_event(check_name, order_data, reason)
 
-    def _persist_leaderboard_snapshot(self) -> None:
-        """Persist the latest leaderboard snapshot to the database."""
+    def _persist_leaderboard_snapshot(self, snapshot: LeaderboardSnapshot) -> None:
+        """Persist a leaderboard snapshot to the database."""
         if not self._repo or not self._monitor:
-            return
-        snapshot = self._monitor.previous_snapshot
-        if snapshot is None:
             return
         snapshot_data = self._monitor.snapshot_to_dict(snapshot)
         self._repo.record_leaderboard_snapshot(
