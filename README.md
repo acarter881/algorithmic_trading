@@ -258,14 +258,71 @@ Use this checklist before promoting from demo/paper trading to production:
   - Pairwise and rank-based probability assumptions are reviewed on a recurring schedule.
   - Strategy behavior is revalidated after parser, signal, or tie-break logic changes.
 
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `autotrader run` | Start the trading loop (paper or live, based on config) |
+| `autotrader preflight` | Run connectivity checks (API, DB, Arena, Discord) without trading |
+| `autotrader validate-config` | Validate configuration files and print resolved settings |
+| `autotrader init-db-cmd` | Create database tables without starting the loop |
+| `autotrader pnl` | Show P&L report from the trading database (`--days 7`, `--csv`) |
+| `autotrader calc-fee <price> <qty>` | Calculate taker/maker fees for a trade |
+| `autotrader replay <signals.json>` | Replay historical signals through the strategy for backtesting |
+
+All commands accept `--config-dir` (default: `config`). `run` and `preflight` also accept `--environment demo|production`.
+
+## Backtesting
+
+The replay engine runs historical signals through the full pipeline (strategy → risk → paper execution) without connecting to any external service:
+
+```bash
+autotrader replay signals.json --market-data market_data.json --config-dir config
+```
+
+`signals.json` format — array of signal objects:
+```json
+[
+  {
+    "source": "arena_monitor",
+    "event_type": "new_leader",
+    "timestamp": "2026-02-15T12:00:00",
+    "urgency": "high",
+    "data": {"new_leader": "model-name", "previous_leader": "old-model"},
+    "relevant_series": ["KXTOPMODEL"]
+  }
+]
+```
+
+Output includes: signals processed, proposals generated, risk approvals/rejections, fills, fees, and open positions.
+
+Paper fills are simulated at the proposed price (no slippage or partial fill modeling). Use replay for signal quality and risk-limit validation, not P&L prediction.
+
+## Risk Management
+
+Every proposed order passes through 6 independent checks before reaching the execution engine. If **any** check fails, the order is rejected and a `RiskEvent` is persisted to the database.
+
+| Check | Default Limit | Description |
+|-------|---------------|-------------|
+| Kill switch | off | Global circuit breaker — blocks all orders when active |
+| Price sanity | 1–99c | Rejects prices outside valid Kalshi range |
+| Position per contract | 100 contracts | Max position in a single contract ticker |
+| Position per event | 250 contracts | Max aggregate position across an event's contracts |
+| Daily loss | $200 | Max combined realized + unrealized loss per strategy per day |
+| Portfolio exposure | 60% of balance | Max gross exposure as percentage of account balance |
+
+Limits are configured in `config/risk.yaml`. The kill switch can be activated programmatically or via config (`kill_switch_enabled: true`).
+
+In live mode, positions are reconciled against the exchange every 300 seconds to detect drift.
+
 ## Development
 
 ```bash
 # Run tests
 pytest tests/unit/ -v
 
-# Lint
-ruff check src/ tests/
+# Format and lint (required before committing)
+ruff format src/ tests/ && ruff check --fix src/ tests/
 
 # Type check
 mypy src/autotrader/
@@ -275,16 +332,19 @@ mypy src/autotrader/
 
 ```
 src/autotrader/       # Main package
+  main.py             # CLI entry point (run, preflight, pnl, replay, etc.)
   config/             # Pydantic config models and YAML loader
-  api/                # Kalshi API client wrapper
-  signals/            # Signal source plugins (Arena monitor, etc.)
-  strategies/         # Trading strategies
-  risk/               # Risk management
-  execution/          # Order execution engine
-  state/              # Database models and persistence
-  monitoring/         # Logging and Discord alerts
+  core/               # Trading loop orchestration
+  api/                # Kalshi API client + WebSocket streaming
+  signals/            # Signal source plugins (Arena monitor, parser, settlement)
+  strategies/         # Trading strategies (leaderboard_alpha)
+  risk/               # Risk management gate (6 independent checks)
+  execution/          # Order execution engine (paper + live modes)
+  backtest/           # Replay engine for historical signal backtesting
+  state/              # SQLAlchemy models, database, repository
+  monitoring/         # Structured logging, Discord alerts, metrics server
   utils/              # Fee calculator, fuzzy matching
-tests/                # Unit and integration tests
-config/               # YAML configuration files
+tests/                # Unit and integration tests (~536 tests)
+config/               # YAML configuration files (layered)
 scripts/              # Utility scripts
 ```
