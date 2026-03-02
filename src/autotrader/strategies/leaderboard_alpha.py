@@ -10,6 +10,7 @@ combined with quantitative fair-value estimation and fee-aware filtering.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,8 @@ class LeaderboardAlphaStrategy(Strategy):
         self._org_rankings: dict[str, LeaderboardEntry] = {}
         # Arena organization → Kalshi ticker
         self._org_ticker_map: dict[str, str] = {}
+        # Mispricing cooldowns: ticker → monotonic timestamp of last proposal
+        self._mispricing_cooldowns: dict[str, float] = {}
 
     # ── Strategy interface ────────────────────────────────────────────
 
@@ -188,8 +191,7 @@ class LeaderboardAlphaStrategy(Strategy):
         return proposals
 
     async def on_market_update(self, data: Any) -> list[ProposedOrder]:
-        """Update market prices.  This strategy is signal-driven, so no
-        orders are generated from market updates alone."""
+        """Update market prices and check for mispricings."""
         if isinstance(data, dict) and data.get("ticker") in self._contracts:
             c = self._contracts[data["ticker"]]
             for key in ("yes_bid", "yes_ask", "last_price"):
@@ -199,6 +201,7 @@ class LeaderboardAlphaStrategy(Strategy):
             event_ticker = data.get("event_ticker")
             if isinstance(event_ticker, str) and event_ticker:
                 self._ticker_event_map[data["ticker"]] = event_ticker
+            return self._check_mispricing(c)
         return []
 
     async def on_fill(self, fill_data: Any) -> None:
@@ -247,6 +250,41 @@ class LeaderboardAlphaStrategy(Strategy):
 
     async def teardown(self) -> None:
         logger.info("strategy_teardown", strategy=self.name)
+
+    # ── Ranking seeding ──────────────────────────────────────────────
+
+    def seed_rankings(
+        self,
+        entries: list[LeaderboardEntry],
+        pairwise: dict[str, PairwiseAggregate] | None = None,
+    ) -> None:
+        """Populate rankings from a full leaderboard snapshot.
+
+        Called once by the trading loop after the first successful Arena
+        fetch so the strategy has fair-value estimates before any diff
+        signals arrive.  Eagerly resolves tickers for top-ranked models.
+        """
+        for entry in entries:
+            self._rankings[entry.model_name] = entry
+        if pairwise:
+            self._pairwise.update(pairwise)
+        self._rebuild_org_rankings()
+
+        # Eagerly resolve tickers for competitive models
+        for entry in entries:
+            if entry.rank_ub <= 0 or entry.rank_ub > 10:
+                continue
+            self._resolve_ticker(entry.model_name, series="KXTOPMODEL")
+            if entry.organization:
+                self._resolve_ticker(entry.organization, series="KXLLM1")
+
+        logger.info(
+            "rankings_seeded",
+            strategy=self.name,
+            model_count=len(entries),
+            mapped_models=len(self._model_ticker_map),
+            mapped_orgs=len(self._org_ticker_map),
+        )
 
     # ── Fair value ────────────────────────────────────────────────────
 
@@ -583,6 +621,107 @@ class LeaderboardAlphaStrategy(Strategy):
             OrderUrgency.ADAPTIVE,
             f"pairwise win={new_avg:.3f} battles={new_battles}, fv={fair_value}c mkt={market_price}c",
         )
+
+    # ── Mispricing detection ─────────────────────────────────────────
+
+    def _check_mispricing(self, contract: ContractView) -> list[ProposedOrder]:
+        """Check if a contract is mispriced relative to fair value.
+
+        Called on every market data update.  Returns buy or sell proposals
+        when the edge exceeds ``mispricing_min_edge_cents`` and the ticker
+        is not on cooldown.
+        """
+        if not self._config.mispricing_detection_enabled:
+            return []
+        if not self._rankings:
+            return []
+
+        ticker = contract.ticker
+        series = contract.series
+
+        # Reverse-lookup: find the Arena name for this ticker
+        fair_value: int | None = None
+        if series == "KXTOPMODEL":
+            arena_name = self._reverse_lookup_model(ticker)
+            if arena_name is not None:
+                fair_value = self.estimate_fair_value(arena_name)
+        elif series == "KXLLM1":
+            arena_name = self._reverse_lookup_org(ticker)
+            if arena_name is not None:
+                fair_value = self.estimate_org_fair_value(arena_name)
+        else:
+            return []
+
+        if fair_value is None:
+            return []
+
+        # Cooldown check
+        now = time.monotonic()
+        last = self._mispricing_cooldowns.get(ticker, 0.0)
+        if now - last < self._config.mispricing_cooldown_seconds:
+            return []
+
+        market_price = contract.yes_ask or contract.last_price
+        if market_price <= 0 or market_price >= 100:
+            return []
+
+        edge = fair_value - market_price
+        orders: list[ProposedOrder] = []
+
+        if edge >= self._config.mispricing_min_edge_cents:
+            # Underpriced — buy YES
+            orders = self._propose_buy(
+                ticker,
+                contract,
+                fair_value,
+                market_price,
+                OrderUrgency.AGGRESSIVE,
+                f"mispricing: fv={fair_value}c mkt={market_price}c edge={edge}c",
+            )
+        elif edge <= -self._config.mispricing_min_edge_cents and contract.position > 0:
+            # Overpriced and we hold YES — sell to reduce position
+            sell_price = contract.yes_bid or contract.last_price
+            if 0 < sell_price < 100:
+                sell_qty = min(contract.position, int(self._config.max_position_per_contract))
+                orders = [
+                    ProposedOrder(
+                        strategy=self.name,
+                        ticker=ticker,
+                        side="no",
+                        price_cents=100 - sell_price,
+                        quantity=sell_qty,
+                        urgency=OrderUrgency.AGGRESSIVE,
+                        rationale=f"mispricing: overpriced by {-edge}c, fv={fair_value}c mkt={market_price}c, reducing position",
+                    )
+                ]
+
+        if orders:
+            self._mispricing_cooldowns[ticker] = now
+            logger.info(
+                "mispricing_detected",
+                strategy=self.name,
+                ticker=ticker,
+                fair_value=fair_value,
+                market_price=market_price,
+                edge=edge,
+                side="buy" if edge > 0 else "sell",
+            )
+
+        return orders
+
+    def _reverse_lookup_model(self, ticker: str) -> str | None:
+        """Find the Arena model name mapped to a Kalshi ticker."""
+        for arena_name, mapped_ticker in self._model_ticker_map.items():
+            if mapped_ticker == ticker:
+                return arena_name
+        return None
+
+    def _reverse_lookup_org(self, ticker: str) -> str | None:
+        """Find the Arena organization name mapped to a Kalshi ticker."""
+        for org_name, mapped_ticker in self._org_ticker_map.items():
+            if mapped_ticker == ticker:
+                return org_name
+        return None
 
     # ── Helpers ───────────────────────────────────────────────────────
 
