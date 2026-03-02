@@ -51,6 +51,30 @@ class TestEnvOverrides:
             result = _apply_env_overrides(data)
         assert "other_var" not in result
 
+    def test_legacy_aliases_are_applied(self) -> None:
+        data: dict = {"kalshi": {"environment": "demo", "execution_mode": "paper"}}
+        with patch.dict(
+            os.environ,
+            {"ENVIRONMENT": "production", "EXECUTION_MODE": "live"},
+            clear=True,
+        ):
+            result = _apply_env_overrides(data)
+        assert result["kalshi"]["environment"] == "production"
+        assert result["kalshi"]["execution_mode"] == "live"
+
+    def test_namespaced_keys_take_precedence_over_legacy_aliases(self) -> None:
+        data: dict = {"kalshi": {"environment": "demo"}}
+        with patch.dict(
+            os.environ,
+            {
+                "ENVIRONMENT": "production",
+                "AUTOTRADER__KALSHI__ENVIRONMENT": "demo",
+            },
+            clear=True,
+        ):
+            result = _apply_env_overrides(data)
+        assert result["kalshi"]["environment"] == "demo"
+
 
 class TestAppConfig:
     def test_defaults(self) -> None:
@@ -129,6 +153,17 @@ class TestLoadConfig:
 
         assert config.kalshi.environment == Environment.DEMO
         assert config.logging.level == "DEBUG"
+
+    def test_legacy_environment_selects_live_overlay(self, tmp_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text(yaml.dump({"logging": {"level": "DEBUG"}}))
+        live = tmp_path / "live.yaml"
+        live.write_text(yaml.dump({"logging": {"level": "WARNING"}}))
+
+        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=True):
+            config = load_config(config_dir=tmp_path)
+
+        assert config.logging.level == "WARNING"
 
     def test_risk_yaml(self, tmp_path: Path) -> None:
         risk = tmp_path / "risk.yaml"
