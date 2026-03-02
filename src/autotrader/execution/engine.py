@@ -351,9 +351,7 @@ class ExecutionEngine:
 
     def _evict_terminal_orders(self) -> None:
         """Remove old terminal orders to prevent unbounded memory growth."""
-        terminal = [
-            oid for oid, o in self._orders.items() if o.status in self._TERMINAL_STATUSES
-        ]
+        terminal = [oid for oid, o in self._orders.items() if o.status in self._TERMINAL_STATUSES]
         excess = len(terminal) - self._max_terminal_orders
         if excess <= 0:
             return
