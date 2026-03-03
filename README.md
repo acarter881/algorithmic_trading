@@ -267,6 +267,7 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 | `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` | Path to RSA private key `.pem` file | Yes |
 | `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` or `production` — controls which Kalshi API endpoint is used | No (default: `demo`) |
 | `AUTOTRADER__KALSHI__EXECUTION_MODE` | `paper` (simulated fills) or `live` (real orders) — independent of environment | No (default: `paper`) |
+| `AUTOTRADER__KALSHI__WEBSOCKET_ENABLED` | Enable real-time WebSocket market data instead of REST polling | No (default: `false`) |
 | `AUTOTRADER__DISCORD__WEBHOOK_URL` | Discord webhook for alerts | No |
 | `AUTOTRADER__DISCORD__ENABLED` | Enable Discord notifications | No |
 | `AUTOTRADER__DATABASE__URL` | SQLite database path | No |
