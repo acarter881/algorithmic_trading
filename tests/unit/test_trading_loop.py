@@ -1812,3 +1812,53 @@ class TestMispricingIntegration:
         assert loop.strategy is not None
         assert "GPT-5" in loop.strategy.rankings
         await loop.shutdown()
+
+    async def test_ws_ticker_buffers_mispricing_proposals(self) -> None:
+        """When WebSocket is active, mispricing proposals from
+        _on_ws_ticker are buffered and drained on the next tick."""
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+
+        # Mock on_market_update to return a mispricing proposal
+        proposal = _proposal()
+        assert loop.strategy is not None
+        loop.strategy.on_market_update = AsyncMock(return_value=[proposal])  # type: ignore[method-assign]
+
+        # Simulate a WS ticker message
+        ws_message = {
+            "type": "ticker",
+            "sid": 1,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "KXTOPMODEL-T1",
+                "yes_bid": 55,
+                "yes_ask": 60,
+                "last_price": 58,
+            },
+        }
+        await loop._on_ws_ticker(ws_message)
+
+        # Proposal should be buffered
+        assert len(loop._ws_pending_proposals) == 1
+        assert loop._ws_pending_proposals[0] is proposal
+
+        # Simulate WS connected so REST polling is skipped
+        loop._ws_client._connected = True
+        loop._market_data_client = MagicMock()
+
+        drained = await loop._refresh_market_data()
+
+        # Buffer should be drained
+        assert len(drained) == 1
+        assert drained[0] is proposal
+        assert len(loop._ws_pending_proposals) == 0
+
+        # REST client should NOT have been called
+        loop._market_data_client.get_market.assert_not_called()
+        await loop.shutdown()

@@ -74,6 +74,7 @@ class TradingLoop:
         self._ticker_event_map: dict[str, str] = {}
         self._cached_balance_cents: int | None = None
         self._rankings_seeded = False
+        self._ws_pending_proposals: list[ProposedOrder] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -660,8 +661,12 @@ class TradingLoop:
         if not self._strategies or self._market_data_client is None:
             return proposals
 
-        # Skip REST polling when WebSocket is streaming prices
+        # Skip REST polling when WebSocket is streaming prices.
+        # Drain any mispricing proposals buffered by _on_ws_ticker().
         if self._ws_client is not None and self._ws_client.connected:
+            if self._ws_pending_proposals:
+                proposals.extend(self._ws_pending_proposals)
+                self._ws_pending_proposals.clear()
             return proposals
 
         # Collect tickers from all strategies
@@ -879,7 +884,9 @@ class TradingLoop:
             update["event_ticker"] = event_ticker
             self._ticker_event_map[ticker] = event_ticker
         for strat in self._strategies.values():
-            await strat.on_market_update(update)
+            strat_proposals = await strat.on_market_update(update)
+            if strat_proposals:
+                self._ws_pending_proposals.extend(strat_proposals)
 
     async def _on_ws_fill(self, message: dict[str, Any]) -> None:
         """Handle a WebSocket fill message — route to fill callback."""
