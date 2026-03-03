@@ -102,6 +102,9 @@ class LeaderboardAlphaConfig(BaseModel):
     fuzzy_match_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
     model_name_overrides: dict[str, str] = Field(default_factory=dict)
     target_series: list[str] = Field(default_factory=lambda: ["KXTOPMODEL", "KXLLM1"])
+    mispricing_detection_enabled: bool = True
+    mispricing_min_edge_cents: int = 5
+    mispricing_cooldown_seconds: int = 300
 
 
 class DiscordConfig(BaseModel):

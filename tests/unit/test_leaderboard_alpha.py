@@ -1420,3 +1420,219 @@ class TestOrgStateMaintenance:
         await s.initialize(org_market_data, {"org_ticker_map": {"OpenAI": "KXLLM1-OPENAI"}})
 
         assert s._org_ticker_map["OpenAI"] == "KXLLM1-OPENAI"
+
+
+# ── Seed rankings ──────────────────────────────────────────────────────
+
+
+class TestSeedRankings:
+    async def test_seed_populates_rankings(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [
+            _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+            _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+        ]
+        s.seed_rankings(entries)
+
+        assert "GPT-5" in s.rankings
+        assert "Gemini 3" in s.rankings
+        assert s.rankings["GPT-5"].rank_ub == 1
+
+    async def test_seed_resolves_tickers_for_top_models(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [
+            _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+            _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+            _entry(name="SomeModel", rank_ub=15, organization="SomeCo"),
+        ]
+        s.seed_rankings(entries)
+
+        # Top models (rank_ub <= 10) should have tickers resolved
+        assert s.model_ticker_map.get("GPT-5") == "KXTOPMODEL-GPT5"
+        assert s.model_ticker_map.get("Gemini 3") == "KXTOPMODEL-GEMINI3"
+        # rank_ub=15 should NOT be resolved
+        assert "SomeModel" not in s.model_ticker_map
+
+    async def test_seed_populates_pairwise(self) -> None:
+        from autotrader.signals.arena_types import PairwiseAggregate
+
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [_entry(name="GPT-5", rank_ub=1)]
+        pairwise = {
+            "GPT-5": PairwiseAggregate(
+                model_name="GPT-5",
+                total_pairwise_battles=5000,
+                average_pairwise_win_rate=0.6,
+            )
+        }
+        s.seed_rankings(entries, pairwise)
+
+        assert "GPT-5" in s._pairwise
+        assert s._pairwise["GPT-5"].average_pairwise_win_rate == 0.6
+
+    async def test_seed_builds_org_rankings(self) -> None:
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [
+            _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+            _entry(name="GPT-4o", rank_ub=3, organization="OpenAI"),
+        ]
+        s.seed_rankings(entries)
+
+        # org_rankings should pick best entry (rank_ub=1)
+        assert s._org_rankings["OpenAI"].model_name == "GPT-5"
+
+
+# ── Mispricing detection ───────────────────────────────────────────────
+
+
+class TestMispricingDetection:
+    async def _setup_strategy_with_rankings(
+        self,
+        market_price: int = 40,
+        rank_ub: int = 1,
+        position: int = 0,
+        *,
+        mispricing_min_edge_cents: int = 5,
+        mispricing_cooldown_seconds: int = 300,
+        mispricing_detection_enabled: bool = True,
+    ) -> LeaderboardAlphaStrategy:
+        """Create a strategy with seeded rankings and a known market price."""
+        cfg = _config(
+            mispricing_detection_enabled=mispricing_detection_enabled,
+            mispricing_min_edge_cents=mispricing_min_edge_cents,
+            mispricing_cooldown_seconds=mispricing_cooldown_seconds,
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+
+        # Seed rankings so fair values are known
+        entries = [
+            _entry(name="GPT-5", rank_ub=rank_ub, organization="OpenAI"),
+            _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+        ]
+        s.seed_rankings(entries)
+
+        # Set position if needed
+        if position != 0:
+            s._contracts["KXTOPMODEL-GPT5"].position = position
+
+        return s
+
+    async def test_mispricing_buy_underpriced(self) -> None:
+        """Market at 40c, fair value ~65c (rank_ub=1) → buy proposal."""
+        s = await self._setup_strategy_with_rankings(market_price=40, rank_ub=1)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+        )
+
+        assert len(proposals) >= 1
+        assert proposals[0].side == "yes"
+        assert proposals[0].ticker == "KXTOPMODEL-GPT5"
+        assert "mispricing" in proposals[0].rationale
+
+    async def test_mispricing_sell_overpriced_with_position(self) -> None:
+        """Market at 60c, fair value ~4c (rank_ub=5), holding 10 → sell."""
+        s = await self._setup_strategy_with_rankings(market_price=60, rank_ub=5, position=10)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 60, "yes_bid": 58, "last_price": 59}
+        )
+
+        assert len(proposals) >= 1
+        assert proposals[0].side == "no"
+        assert "mispricing" in proposals[0].rationale
+        assert "reducing position" in proposals[0].rationale
+
+    async def test_mispricing_no_sell_without_position(self) -> None:
+        """Overpriced but no position → no sell."""
+        s = await self._setup_strategy_with_rankings(market_price=60, rank_ub=5, position=0)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 60, "yes_bid": 58, "last_price": 59}
+        )
+
+        assert len(proposals) == 0
+
+    async def test_mispricing_below_threshold(self) -> None:
+        """Edge=2c, threshold=5c → no proposal."""
+        # rank_ub=2 → fv≈22c, market at 20c → edge≈2c < 5c threshold
+        s = await self._setup_strategy_with_rankings(market_price=20, rank_ub=2)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 20, "yes_bid": 18, "last_price": 19}
+        )
+
+        assert len(proposals) == 0
+
+    async def test_mispricing_cooldown_blocks_second_proposal(self) -> None:
+        """Second call within cooldown returns empty."""
+        s = await self._setup_strategy_with_rankings(market_price=40, rank_ub=1)
+
+        update = {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+
+        first = await s.on_market_update(update)
+        assert len(first) >= 1
+
+        second = await s.on_market_update(update)
+        assert len(second) == 0
+
+    async def test_mispricing_cooldown_expired(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After cooldown expires, proposals are generated again."""
+        import time as time_mod
+
+        s = await self._setup_strategy_with_rankings(market_price=40, rank_ub=1, mispricing_cooldown_seconds=10)
+
+        update = {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+
+        first = await s.on_market_update(update)
+        assert len(first) >= 1
+
+        # Advance monotonic time past cooldown
+        original_monotonic = time_mod.monotonic
+        monkeypatch.setattr(time_mod, "monotonic", lambda: original_monotonic() + 15)
+
+        second = await s.on_market_update(update)
+        assert len(second) >= 1
+
+    async def test_mispricing_disabled(self) -> None:
+        """Config flag off → no proposals."""
+        s = await self._setup_strategy_with_rankings(market_price=40, rank_ub=1, mispricing_detection_enabled=False)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+        )
+
+        assert len(proposals) == 0
+
+    async def test_mispricing_no_rankings_returns_empty(self) -> None:
+        """Empty rankings → no proposals."""
+        cfg = _config(mispricing_detection_enabled=True, mispricing_min_edge_cents=5)
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+        # No seed_rankings call → rankings empty
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+        )
+
+        assert len(proposals) == 0
+
+    async def test_mispricing_aggressive_urgency(self) -> None:
+        """Mispricing proposals use AGGRESSIVE urgency."""
+        s = await self._setup_strategy_with_rankings(market_price=40, rank_ub=1)
+
+        proposals = await s.on_market_update(
+            {"ticker": "KXTOPMODEL-GPT5", "yes_ask": 40, "yes_bid": 38, "last_price": 39}
+        )
+
+        assert len(proposals) >= 1
+        assert proposals[0].urgency == OrderUrgency.AGGRESSIVE

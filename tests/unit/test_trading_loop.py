@@ -1649,3 +1649,216 @@ class TestWebSocketIntegration:
         await loop._stop_websocket()
         assert loop._ws_task is None
         await loop.shutdown()
+
+
+# ── Mispricing / market-proposal integration ──────────────────────────
+
+
+class TestMispricingIntegration:
+    async def test_tick_processes_market_proposals_without_signals(self) -> None:
+        """Market-driven proposals are risk-checked and executed even when
+        there are no Arena signals."""
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+
+        # Mock monitor: no signals
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        # Mock market data client to return a low price (creating mispricing)
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=38, yes_ask=40, last_price=39, event_ticker="")
+        )
+
+        # Mock on_market_update to return a proposal (simulating mispricing detection)
+        proposal = _proposal()
+        assert loop.strategy is not None
+        loop.strategy.on_market_update = AsyncMock(return_value=[proposal])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        # The proposal should have been submitted through execution
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 1
+        await loop.shutdown()
+
+    async def test_tick_combines_signal_and_market_proposals(self) -> None:
+        """Both signal-driven and market-driven proposals are processed
+        together in the same tick."""
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        config = _config()
+        config.risk.per_strategy["leaderboard_alpha"] = RiskStrategyConfig(
+            max_position_per_contract=100,
+            max_position_per_event=250,
+            max_strategy_loss=200,
+            min_edge_multiplier=2.5,
+        )
+
+        loop = TradingLoop(config)
+        await loop.initialize(market_data=market_data)
+
+        # Mock monitor: returns a signal
+        assert loop._monitor is not None
+        loop._monitor.poll = AsyncMock(return_value=[_signal()])  # type: ignore[method-assign]
+
+        # Mock market data client so refresh doesn't fail on DNS
+        assert loop._market_data_client is not None
+        loop._market_data_client.get_market = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(yes_bid=38, yes_ask=40, last_price=39, event_ticker="")
+        )
+
+        # Market proposal from on_market_update
+        market_proposal = ProposedOrder(
+            strategy="leaderboard_alpha",
+            ticker="KXTOPMODEL-GPT5",
+            side="yes",
+            price_cents=40,
+            quantity=2,
+            urgency=OrderUrgency.AGGRESSIVE,
+            rationale="mispricing",
+        )
+        assert loop.strategy is not None
+        loop.strategy.on_market_update = AsyncMock(return_value=[market_proposal])  # type: ignore[method-assign]
+
+        # Signal proposal from on_signal
+        signal_proposal = _proposal()
+        loop.strategy.on_signal = AsyncMock(return_value=[signal_proposal])  # type: ignore[method-assign]
+
+        await loop._tick()
+
+        # Both proposals should be submitted
+        assert loop.execution_engine is not None
+        assert len(loop.execution_engine.orders) == 2
+        await loop.shutdown()
+
+    async def test_rankings_seeded_from_first_snapshot(self) -> None:
+        """After the first successful Arena snapshot, strategy rankings
+        are seeded so mispricing detection can compute fair values."""
+        from autotrader.signals.arena_types import LeaderboardEntry as LBEntry
+        from autotrader.signals.arena_types import LeaderboardSnapshot
+
+        market_data = {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-GPT5",
+                    "title": "Top model",
+                    "subtitle": "GPT-5",
+                    "yes_bid": 44,
+                    "yes_ask": 46,
+                    "last_price": 45,
+                }
+            ]
+        }
+        loop = TradingLoop(_config())
+        await loop.initialize(market_data=market_data)
+
+        # Create a snapshot with entries
+        snapshot = LeaderboardSnapshot(
+            entries=[
+                LBEntry(model_name="GPT-5", rank_ub=1, rank=1, score=1350.0, votes=10000, organization="OpenAI"),
+            ],
+            pairwise={},
+        )
+
+        assert loop._monitor is not None
+        # Ensure no previous snapshot before poll (simulating first fetch)
+        loop._monitor._previous_snapshot = None
+
+        # Mock poll to simulate fetching the first snapshot:
+        # sets _previous_snapshot and returns no diff signals
+        async def mock_poll() -> list:
+            loop._monitor._previous_snapshot = snapshot  # type: ignore[union-attr]
+            return []
+
+        loop._monitor.poll = mock_poll  # type: ignore[method-assign]
+
+        assert not loop._rankings_seeded
+
+        await loop._tick()
+
+        assert loop._rankings_seeded
+        assert loop.strategy is not None
+        assert "GPT-5" in loop.strategy.rankings
+        await loop.shutdown()
+
+    async def test_ws_ticker_buffers_mispricing_proposals(self) -> None:
+        """When WebSocket is active, mispricing proposals from
+        _on_ws_ticker are buffered and drained on the next tick."""
+        loop = TradingLoop(_ws_config())
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-T1", "subtitle": "Model A", "yes_bid": 40, "yes_ask": 50, "last_price": 45},
+            ]
+        }
+        await loop.initialize(market_data=market_data)
+        assert loop.ws_client is not None
+
+        # Mock on_market_update to return a mispricing proposal
+        proposal = _proposal()
+        assert loop.strategy is not None
+        loop.strategy.on_market_update = AsyncMock(return_value=[proposal])  # type: ignore[method-assign]
+
+        # Simulate a WS ticker message
+        ws_message = {
+            "type": "ticker",
+            "sid": 1,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "KXTOPMODEL-T1",
+                "yes_bid": 55,
+                "yes_ask": 60,
+                "last_price": 58,
+            },
+        }
+        await loop._on_ws_ticker(ws_message)
+
+        # Proposal should be buffered
+        assert len(loop._ws_pending_proposals) == 1
+        assert loop._ws_pending_proposals[0] is proposal
+
+        # Simulate WS connected so REST polling is skipped
+        loop._ws_client._connected = True
+        loop._market_data_client = MagicMock()
+
+        drained = await loop._refresh_market_data()
+
+        # Buffer should be drained
+        assert len(drained) == 1
+        assert drained[0] is proposal
+        assert len(loop._ws_pending_proposals) == 0
+
+        # REST client should NOT have been called
+        loop._market_data_client.get_market.assert_not_called()
+        await loop.shutdown()
