@@ -657,8 +657,8 @@ class LeaderboardAlphaStrategy(Strategy):
 
         # Cooldown check
         now = time.monotonic()
-        last = self._mispricing_cooldowns.get(ticker, 0.0)
-        if now - last < self._config.mispricing_cooldown_seconds:
+        last = self._mispricing_cooldowns.get(ticker)
+        if last is not None and now - last < self._config.mispricing_cooldown_seconds:
             return []
 
         market_price = contract.yes_ask or contract.last_price
