@@ -790,6 +790,15 @@ class TradingLoop:
     def _init_websocket(self) -> None:
         """Create and configure the WebSocket client for real-time streaming."""
         private_key_pem = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
+        if not private_key_pem and self._config.kalshi.private_key_path:
+            try:
+                with open(self._config.kalshi.private_key_path) as f:
+                    private_key_pem = f.read()
+            except OSError:
+                logger.warning(
+                    "websocket_private_key_read_failed",
+                    path=self._config.kalshi.private_key_path,
+                )
         is_demo = self._config.kalshi.environment.value != "production"
         self._ws_client = KalshiWebSocketClient(
             api_key_id=self._config.kalshi.api_key_id,
