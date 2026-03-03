@@ -315,9 +315,14 @@ class ArenaMonitor(SignalSource):
                 )
             )
 
-        # Rank changes
+        # Rank changes — only emit for models within the rank cutoff
+        cutoff = self._config.signal_rank_cutoff
         curr_by_name = current.by_model_name()
+        filtered_rank = 0
         for rc in diff.rank_changes:
+            if rc.old_rank_ub > cutoff and rc.new_rank_ub > cutoff:
+                filtered_rank += 1
+                continue
             urgency = SignalUrgency.HIGH if rc.new_rank_ub == 1 or rc.old_rank_ub == 1 else SignalUrgency.MEDIUM
             curr_entry = curr_by_name.get(rc.model_name)
             signals.append(
@@ -342,8 +347,13 @@ class ArenaMonitor(SignalSource):
                 )
             )
 
-        # Score shifts
+        # Score shifts — only emit for models within the rank cutoff
+        filtered_score = 0
         for sc in diff.score_changes:
+            entry = curr_by_name.get(sc.model_name)
+            if entry and entry.rank_ub > cutoff:
+                filtered_score += 1
+                continue
             signals.append(
                 Signal(
                     source=self.name,
@@ -360,8 +370,13 @@ class ArenaMonitor(SignalSource):
                 )
             )
 
-        # Pairwise shifts
+        # Pairwise shifts — only emit for models within the rank cutoff
+        filtered_pairwise = 0
         for pc in diff.pairwise_changes:
+            entry = curr_by_name.get(pc.model_name)
+            if entry and entry.rank_ub > cutoff:
+                filtered_pairwise += 1
+                continue
             signals.append(
                 Signal(
                     source=self.name,
@@ -377,6 +392,17 @@ class ArenaMonitor(SignalSource):
                     relevant_series=TARGET_SERIES,
                     urgency=SignalUrgency.MEDIUM,
                 )
+            )
+
+        total_filtered = filtered_rank + filtered_score + filtered_pairwise
+        if total_filtered > 0:
+            logger.info(
+                "arena_signals_filtered_by_rank",
+                cutoff=cutoff,
+                filtered_total=total_filtered,
+                filtered_rank=filtered_rank,
+                filtered_score=filtered_score,
+                filtered_pairwise=filtered_pairwise,
             )
 
         # New models

@@ -295,6 +295,119 @@ class TestSignalGeneration:
             assert signal.source == "arena_monitor"
 
 
+# ── Signal Rank Cutoff Filtering ─────────────────────────────────────
+
+
+class TestSignalRankCutoff:
+    """Verify that ranking_change, score_shift, and pairwise_shift signals
+    are filtered out when both old and new ranks exceed signal_rank_cutoff."""
+
+    def test_rank_change_beyond_cutoff_filtered(self) -> None:
+        """Models whose old AND new rank are both > cutoff should be dropped."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        monitor._previous_snapshot = _snapshot(
+            [
+                _entry("Top", rank=1, rank_ub=1),
+                _entry("Mid", rank=3, rank_ub=3),
+                _entry("Deep", rank=50, rank_ub=50),
+            ]
+        )
+        curr = _snapshot(
+            [
+                _entry("Top", rank=1, rank_ub=1),
+                _entry("Mid", rank=4, rank_ub=4),  # 3→4, within cutoff
+                _entry("Deep", rank=51, rank_ub=51),  # 50→51, beyond cutoff
+            ]
+        )
+        signals = monitor._generate_signals(curr)
+        ranking = [s for s in signals if s.event_type == "ranking_change"]
+        assert len(ranking) == 1
+        assert ranking[0].data["model_name"] == "Mid"
+
+    def test_rank_change_entering_cutoff_kept(self) -> None:
+        """A model rising INTO the cutoff range should still emit a signal."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        monitor._previous_snapshot = _snapshot([_entry("Rising", rank=6, rank_ub=6)])
+        curr = _snapshot([_entry("Rising", rank=4, rank_ub=4)])
+        signals = monitor._generate_signals(curr)
+        ranking = [s for s in signals if s.event_type == "ranking_change"]
+        assert len(ranking) == 1
+
+    def test_rank_change_leaving_cutoff_kept(self) -> None:
+        """A model dropping OUT of the cutoff range should still emit a signal."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        monitor._previous_snapshot = _snapshot([_entry("Falling", rank=5, rank_ub=5)])
+        curr = _snapshot([_entry("Falling", rank=7, rank_ub=7)])
+        signals = monitor._generate_signals(curr)
+        ranking = [s for s in signals if s.event_type == "ranking_change"]
+        assert len(ranking) == 1
+
+    def test_score_shift_beyond_cutoff_filtered(self) -> None:
+        """Score shifts for models ranked beyond cutoff should be dropped."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        monitor._previous_snapshot = _snapshot(
+            [
+                _entry("Top", rank=1, rank_ub=1, score=1300.0),
+                _entry("Deep", rank=50, rank_ub=50, score=1100.0),
+            ]
+        )
+        curr = _snapshot(
+            [
+                _entry("Top", rank=1, rank_ub=1, score=1310.0),  # within cutoff
+                _entry("Deep", rank=50, rank_ub=50, score=1115.0),  # beyond cutoff
+            ]
+        )
+        signals = monitor._generate_signals(curr)
+        score = [s for s in signals if s.event_type == "score_shift"]
+        assert len(score) == 1
+        assert score[0].data["model_name"] == "Top"
+
+    def test_new_model_and_leader_not_filtered(self) -> None:
+        """new_model and new_leader signals should never be filtered."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        monitor._previous_snapshot = _snapshot([_entry("A", rank=1, rank_ub=1)])
+        curr = _snapshot(
+            [
+                _entry("A", rank=2, rank_ub=2),
+                _entry("B", rank=1, rank_ub=1),  # new model, takes #1
+            ]
+        )
+        signals = monitor._generate_signals(curr)
+        new_model = [s for s in signals if s.event_type == "new_model"]
+        new_leader = [s for s in signals if s.event_type == "new_leader"]
+        assert len(new_model) == 1
+        assert len(new_leader) == 1
+
+    def test_default_cutoff_is_20(self) -> None:
+        config = ArenaMonitorConfig()
+        assert config.signal_rank_cutoff == 20
+
+    def test_cascade_insertion_filtered(self) -> None:
+        """Simulates adding models that cascade-shift many ranks beyond cutoff."""
+        config = ArenaMonitorConfig(signal_rank_cutoff=5)
+        monitor = ArenaMonitor(config=config)
+        # 10 models: ranks 1-10
+        prev_entries = [_entry(f"M{i}", rank=i, rank_ub=i) for i in range(1, 11)]
+        monitor._previous_snapshot = _snapshot(prev_entries)
+        # 3 new models inserted; existing models shift rank by +1
+        curr_entries = [_entry(f"M{i}", rank=i + 1, rank_ub=i + 1) for i in range(1, 11)]
+        curr_entries.append(_entry("NewA", rank=1, rank_ub=1))
+        curr = _snapshot(curr_entries)
+        signals = monitor._generate_signals(curr)
+        ranking = [s for s in signals if s.event_type == "ranking_change"]
+        # Only models whose old or new rank <= 5 should emit:
+        # M1(1→2), M2(2→3), M3(3→4), M4(4→5), M5(5→6 — old=5 ≤ cutoff)
+        # M6(6→7) both > 5, filtered. M7-M10 also filtered.
+        assert len(ranking) == 5
+        names = {s.data["model_name"] for s in ranking}
+        assert names == {"M1", "M2", "M3", "M4", "M5"}
+
+
 # ── ArenaMonitor Interface ────────────────────────────────────────────
 
 

@@ -60,6 +60,7 @@ class ArenaMonitorConfig(BaseModel):
     poll_interval_seconds: int = 30
     request_timeout_seconds: float = 15.0
     max_consecutive_failures: int = 5
+    signal_rank_cutoff: int = 20
 
 
 class RiskGlobalConfig(BaseModel):
