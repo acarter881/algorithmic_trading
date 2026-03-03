@@ -1489,6 +1489,29 @@ class TestSeedRankings:
         # org_rankings should pick best entry (rank_ub=1)
         assert s._org_rankings["OpenAI"].model_name == "GPT-5"
 
+    async def test_seed_resolves_org_with_suffix_stripped(self) -> None:
+        """Arena org "Google DeepMind" should match Kalshi subtitle "Google"."""
+        cfg = _config(target_series=["KXTOPMODEL", "KXLLM1"])
+        s = _strategy(cfg=cfg)
+        market_data = {
+            "markets": [
+                {"ticker": "KXTOPMODEL-GPT5", "subtitle": "GPT-5", "yes_bid": 55, "yes_ask": 58, "last_price": 56},
+                {"ticker": "KXLLM1-GOOGLE", "subtitle": "Google", "yes_bid": 30, "yes_ask": 34, "last_price": 32},
+                {"ticker": "KXLLM1-META", "subtitle": "Meta", "yes_bid": 20, "yes_ask": 24, "last_price": 22},
+            ],
+        }
+        await s.initialize(market_data, None)
+
+        entries = [
+            _entry(name="Gemini 3", rank_ub=1, organization="Google DeepMind"),
+            _entry(name="Llama 5", rank_ub=2, organization="Meta AI"),
+        ]
+        s.seed_rankings(entries)
+
+        # Org names with suffixes should match the shorter Kalshi subtitles
+        assert s._org_ticker_map.get("Google DeepMind") == "KXLLM1-GOOGLE"
+        assert s._org_ticker_map.get("Meta AI") == "KXLLM1-META"
+
 
 # ── Mispricing detection ───────────────────────────────────────────────
 

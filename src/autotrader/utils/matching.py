@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from thefuzz import fuzz
@@ -23,6 +24,27 @@ def normalize_model_name(name: str) -> str:
     Lowercases, strips whitespace, normalizes separators.
     """
     return name.lower().strip().replace(" ", "-").replace("_", "-")
+
+
+# Suffixes commonly appended to organization names on the Arena
+# leaderboard that Kalshi contract subtitles tend to omit.
+_ORG_SUFFIXES_RE = re.compile(
+    r"\s*\b(?:AI|Labs?|Research|DeepMind|Inc\.?|Corp\.?|Ltd\.?|Technologies|Tech)\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalize_org_name(name: str) -> str:
+    """Strip common organizational suffixes for matching.
+
+    ``"Google DeepMind"`` → ``"Google"``, ``"Meta AI"`` → ``"Meta"``,
+    ``"Mistral AI"`` → ``"Mistral"``.  Names that *are* the suffix
+    (e.g. ``"xAI"``, ``"OpenAI"``) are returned unchanged since
+    stripping would leave nothing useful.
+    """
+    stripped = _ORG_SUFFIXES_RE.sub("", name).strip()
+    # If stripping removed everything (e.g., "AI" → ""), keep original.
+    return stripped if stripped else name
 
 
 def fuzzy_match(
