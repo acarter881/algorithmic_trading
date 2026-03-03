@@ -804,6 +804,7 @@ class TradingLoop:
             api_key_id=self._config.kalshi.api_key_id,
             private_key_pem=private_key_pem,
             is_demo=is_demo,
+            ws_url=self._config.kalshi.websocket_url,
         )
 
         # Subscribe to ticker channel for all tracked markets across all strategies

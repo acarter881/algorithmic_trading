@@ -91,10 +91,14 @@ class KalshiWebSocketClient:
         api_key_id: str = "",
         private_key_pem: str = "",
         is_demo: bool = True,
+        ws_url: str = "",
     ) -> None:
         self._api_key_id = api_key_id
         self._private_key_pem = private_key_pem
-        self._ws_url = self.DEMO_WS_URL if is_demo else self.PROD_WS_URL
+        if ws_url:
+            self._ws_url = ws_url
+        else:
+            self._ws_url = self.DEMO_WS_URL if is_demo else self.PROD_WS_URL
         self._is_demo = is_demo
 
         self._ws: Any = None  # websockets connection
