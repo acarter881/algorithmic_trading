@@ -20,7 +20,7 @@ from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 from autotrader.signals.settlement import resolve_top_model, resolve_top_org
 from autotrader.strategies.base import OrderUrgency, ProposedOrder, Strategy
 from autotrader.utils.fees import FeeCalculator
-from autotrader.utils.matching import fuzzy_match
+from autotrader.utils.matching import fuzzy_match, normalize_org_name
 
 if TYPE_CHECKING:
     from autotrader.config.models import LeaderboardAlphaConfig
@@ -161,7 +161,12 @@ class LeaderboardAlphaStrategy(Strategy):
                     self._ticker_event_map[ticker] = event_ticker
         self._rebuild_org_rankings()
 
-        logger.info("strategy_initialized", strategy=self.name, contracts=len(self._contracts))
+        logger.info(
+            "strategy_initialized",
+            strategy=self.name,
+            contracts=len(self._contracts),
+            contract_names={t: n for t, n in self._ticker_model_names.items()},
+        )
 
     async def on_signal(self, signal: Signal) -> list[ProposedOrder]:
         """Process an arena signal and generate trade proposals."""
@@ -767,6 +772,7 @@ class LeaderboardAlphaStrategy(Strategy):
                 return self._org_ticker_map[model_name]
 
         if not self._ticker_model_names:
+            logger.debug("resolve_ticker_no_contracts", model=model_name, series=series)
             return None
 
         if series is None:
@@ -774,16 +780,57 @@ class LeaderboardAlphaStrategy(Strategy):
         else:
             scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
         if not scoped:
+            logger.debug(
+                "resolve_ticker_no_series_contracts",
+                model=model_name,
+                series=series,
+                available_series=list({self._ticker_series(t) for t in self._ticker_model_names}),
+            )
             return None
 
         candidates = list(scoped.values())
-        match = fuzzy_match(
-            model_name,
-            candidates,
-            threshold=self._config.fuzzy_match_threshold,
-            overrides=self._config.model_name_overrides,
-        )
+
+        # Build list of query variants to try.  For org names (KXLLM1),
+        # also try stripping common suffixes ("Google DeepMind" → "Google")
+        # since Kalshi subtitles often use the shorter company name.
+        queries = [model_name]
+        if series == "KXLLM1":
+            stripped = normalize_org_name(model_name)
+            if stripped != model_name:
+                queries.append(stripped)
+
+        match = None
+        for q in queries:
+            match = fuzzy_match(
+                q,
+                candidates,
+                threshold=self._config.fuzzy_match_threshold,
+                overrides=self._config.model_name_overrides,
+            )
+            if match is not None:
+                break
+
         if match is None:
+            # Log the best score even when below threshold, so operators
+            # can see near-misses and add overrides.
+            from thefuzz import fuzz as _fuzz
+
+            from autotrader.utils.matching import normalize_model_name
+
+            normalized = normalize_model_name(model_name)
+            scored = sorted(
+                ((c, _fuzz.token_sort_ratio(normalized, normalize_model_name(c)) / 100.0) for c in candidates),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            top = scored[:3]
+            logger.info(
+                "resolve_ticker_no_match",
+                model=model_name,
+                series=series,
+                threshold=self._config.fuzzy_match_threshold,
+                best_candidates=[{"name": n, "score": round(s, 3)} for n, s in top],
+            )
             return None
 
         for ticker, name in scoped.items():

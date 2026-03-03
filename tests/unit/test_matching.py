@@ -1,6 +1,6 @@
 """Unit tests for model name fuzzy matching."""
 
-from autotrader.utils.matching import fuzzy_match, normalize_model_name
+from autotrader.utils.matching import fuzzy_match, normalize_model_name, normalize_org_name
 
 
 class TestNormalize:
@@ -97,3 +97,42 @@ class TestKnownMismatches:
         result = fuzzy_match("grok-4.20-beta1", candidates)
         assert result is not None
         assert result.matched == "grok-4.20-beta1"
+
+
+class TestNormalizeOrgName:
+    """Test stripping common organizational suffixes."""
+
+    def test_google_deepmind(self) -> None:
+        assert normalize_org_name("Google DeepMind") == "Google"
+
+    def test_meta_ai(self) -> None:
+        assert normalize_org_name("Meta AI") == "Meta"
+
+    def test_mistral_ai(self) -> None:
+        assert normalize_org_name("Mistral AI") == "Mistral"
+
+    def test_anthropic_unchanged(self) -> None:
+        # "Anthropic" has no suffix to strip.
+        assert normalize_org_name("Anthropic") == "Anthropic"
+
+    def test_openai_unchanged(self) -> None:
+        # "OpenAI" — "AI" is part of the core name (not a trailing word).
+        assert normalize_org_name("OpenAI") == "OpenAI"
+
+    def test_xai_unchanged(self) -> None:
+        # "xAI" — stripping "AI" leaves "x" which is empty-ish but
+        # the function keeps the original when stripping empties it.
+        assert normalize_org_name("xAI") == "xAI"
+
+    def test_labs_suffix(self) -> None:
+        assert normalize_org_name("Cohere Labs") == "Cohere"
+
+    def test_research_suffix(self) -> None:
+        assert normalize_org_name("DeepSeek Research") == "DeepSeek"
+
+    def test_inc_suffix(self) -> None:
+        assert normalize_org_name("Example Inc.") == "Example"
+
+    def test_multiple_suffixes(self) -> None:
+        # Only the trailing suffix is stripped; not recursive.
+        assert normalize_org_name("Foo AI Labs") == "Foo AI"
