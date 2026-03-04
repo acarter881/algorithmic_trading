@@ -1,9 +1,9 @@
 """Integration tests for the Kalshi API client.
 
-These tests run against the real Kalshi Demo API.
+These tests run against the real Kalshi production API (read-only operations).
 They require:
-- Network access to demo-api.kalshi.co
-- Valid demo API credentials set in environment variables:
+- Network access to api.elections.kalshi.com
+- Valid API credentials set in environment variables:
   AUTOTRADER__KALSHI__API_KEY_ID
   AUTOTRADER__KALSHI__PRIVATE_KEY_PATH (or KALSHI_PRIVATE_KEY_PEM)
 
@@ -20,7 +20,7 @@ from autotrader.api.client import (
     KalshiAPIClient,
     MarketInfo,
 )
-from autotrader.config.models import Environment, KalshiConfig
+from autotrader.config.models import KalshiConfig
 
 # Skip all tests in this module if no API credentials are available
 pytestmark = pytest.mark.integration
@@ -33,9 +33,8 @@ skip_no_creds = pytest.mark.skipif(not HAS_CREDENTIALS, reason="No Kalshi API cr
 
 
 def _make_client() -> KalshiAPIClient:
-    """Create a client connected to the Kalshi Demo API."""
+    """Create a client connected to the Kalshi production API."""
     config = KalshiConfig(
-        environment=Environment.DEMO,
         api_key_id=os.environ.get("AUTOTRADER__KALSHI__API_KEY_ID", ""),
         private_key_path=os.environ.get("AUTOTRADER__KALSHI__PRIVATE_KEY_PATH", ""),
     )
@@ -47,8 +46,8 @@ def _make_client() -> KalshiAPIClient:
 
 
 @skip_no_creds
-class TestDemoMarketData:
-    """Test market data endpoints against the demo API."""
+class TestMarketData:
+    """Test market data endpoints against the production API."""
 
     def test_get_exchange_status(self) -> None:
         client = _make_client()
@@ -66,7 +65,6 @@ class TestDemoMarketData:
 
     def test_get_single_market(self) -> None:
         client = _make_client()
-        # First, get any market to know a valid ticker
         markets, _ = client.get_markets(limit=1)
         if markets:
             market = client.get_market(markets[0].ticker)
@@ -86,8 +84,8 @@ class TestDemoMarketData:
 
 
 @skip_no_creds
-class TestDemoPortfolio:
-    """Test authenticated portfolio endpoints against the demo API."""
+class TestPortfolio:
+    """Test authenticated portfolio endpoints."""
 
     def test_get_balance(self) -> None:
         client = _make_client()
@@ -111,15 +109,13 @@ class TestDemoPortfolio:
 
 
 @skip_no_creds
-class TestDemoEventDiscovery:
-    """Test event/market discovery against the demo API."""
+class TestEventDiscovery:
+    """Test event/market discovery."""
 
     def test_discover_active_events(self) -> None:
         client = _make_client()
-        # Use a series that likely exists on demo
         events = client.discover_active_events("KXTOPMODEL")
         assert isinstance(events, list)
-        # May or may not have events on demo, just verify no errors
 
     def test_discover_markets_for_event(self) -> None:
         client = _make_client()

@@ -18,45 +18,35 @@ from autotrader.api.client import (
     OrderRequest,
     PositionInfo,
 )
-from autotrader.config.models import Environment, KalshiConfig
+from autotrader.config.models import KalshiConfig
 
 
 @pytest.fixture
-def demo_config() -> KalshiConfig:
+def config() -> KalshiConfig:
     return KalshiConfig(
-        environment=Environment.DEMO,
         api_key_id="test-key-id",
         private_key_path="",
     )
 
 
 @pytest.fixture
-def client(demo_config: KalshiConfig) -> KalshiAPIClient:
+def client(config: KalshiConfig) -> KalshiAPIClient:
     """Create a client with a mocked SDK underneath."""
-    api_client = KalshiAPIClient(demo_config)
+    api_client = KalshiAPIClient(config)
     api_client._client = MagicMock()
     return api_client
 
 
 class TestClientInitialization:
-    def test_default_is_demo(self, demo_config: KalshiConfig) -> None:
-        client = KalshiAPIClient(demo_config)
-        assert client.is_demo
-
-    def test_production_config(self) -> None:
-        config = KalshiConfig(environment=Environment.PRODUCTION)
-        client = KalshiAPIClient(config)
-        assert not client.is_demo
-
-    def test_base_url_demo(self, demo_config: KalshiConfig) -> None:
-        assert "demo-api.kalshi.co" in demo_config.base_url
-
-    def test_base_url_production(self) -> None:
-        config = KalshiConfig(environment=Environment.PRODUCTION)
+    def test_default_base_url(self, config: KalshiConfig) -> None:
         assert "api.elections.kalshi.com" in config.base_url
 
-    def test_client_not_connected_raises(self, demo_config: KalshiConfig) -> None:
-        api_client = KalshiAPIClient(demo_config)
+    def test_custom_base_url(self) -> None:
+        config = KalshiConfig(base_url="https://custom-api.example.com/v2")
+        assert config.base_url == "https://custom-api.example.com/v2"
+
+    def test_client_not_connected_raises(self, config: KalshiConfig) -> None:
+        api_client = KalshiAPIClient(config)
         with pytest.raises(KalshiAPIError, match="not connected"):
             _ = api_client.client
 

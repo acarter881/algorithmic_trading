@@ -230,9 +230,7 @@ class TradingLoop:
         if not is_paper_mode:
             raise RuntimeError(f"no_tradable_markets_loaded: {message}")
 
-        # Paper/demo mode degrades gracefully — alert once and continue.
-        # The demo exchange typically lacks production series, so this is
-        # expected and should not spam the Discord channel.
+        # Paper mode degrades gracefully — alert once and continue.
         await self._send_system_alert("Warning: no tradable markets", message)
 
     def _bootstrap_market_data(self) -> dict[str, Any]:
@@ -699,11 +697,48 @@ class TradingLoop:
 
         This enables mispricing detection before any diff-based signals
         have arrived, since fair-value estimates require ranking data.
+        After seeding, validates that top-N models/orgs resolve to Kalshi
+        contracts and sends a Discord alert for any gaps.
         """
         for strat in self._strategies.values():
             if hasattr(strat, "seed_rankings"):
                 strat.seed_rankings(snapshot.entries, snapshot.pairwise)
+            if hasattr(strat, "validate_mappings"):
+                report = strat.validate_mappings()
+                # Fire-and-forget the alert — schedule onto the event loop
+                # so we don't block the synchronous seed path.
+                unmapped_models = report.get("unmapped_models", [])
+                unmapped_orgs = report.get("unmapped_orgs", [])
+                if unmapped_models or unmapped_orgs:
+                    asyncio.ensure_future(self._send_mapping_gap_alert(report))
         self._rankings_seeded = True
+
+    async def _send_mapping_gap_alert(self, report: dict[str, Any]) -> None:
+        """Send a Discord alert listing unmapped Arena models/orgs."""
+        unmapped_models = report.get("unmapped_models", [])
+        unmapped_orgs = report.get("unmapped_orgs", [])
+        top_n = report.get("top_n", 20)
+        mapped_models = report.get("mapped_models", [])
+        mapped_orgs = report.get("mapped_orgs", [])
+
+        lines = [f"**Mapping validation (top {top_n} Arena models)**"]
+        lines.append(f"Models: {len(mapped_models)} mapped, {len(unmapped_models)} unmapped")
+        lines.append(f"Orgs: {len(mapped_orgs)} mapped, {len(unmapped_orgs)} unmapped")
+        if unmapped_models:
+            lines.append("")
+            lines.append("**Unmapped models (KXTOPMODEL):**")
+            for m in unmapped_models[:10]:
+                lines.append(f"- rank_ub={m['rank_ub']}: {m['model']}")
+        if unmapped_orgs:
+            lines.append("")
+            lines.append("**Unmapped orgs (KXLLM1):**")
+            for o in unmapped_orgs[:10]:
+                lines.append(f"- best rank_ub={o['best_model_rank_ub']}: {o['org']}")
+
+        await self._send_system_alert(
+            "Mapping Gaps Detected",
+            "\n".join(lines),
+        )
 
     # ── Position reconciliation ──────────────────────────────────────
 
@@ -799,11 +834,9 @@ class TradingLoop:
                     "websocket_private_key_read_failed",
                     path=self._config.kalshi.private_key_path,
                 )
-        is_demo = self._config.kalshi.environment.value != "production"
         self._ws_client = KalshiWebSocketClient(
             api_key_id=self._config.kalshi.api_key_id,
             private_key_pem=private_key_pem,
-            is_demo=is_demo,
             ws_url=self._config.kalshi.websocket_url,
         )
 

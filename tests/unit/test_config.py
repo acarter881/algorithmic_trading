@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from autotrader.config.loader import _apply_env_overrides, _deep_merge, load_config
-from autotrader.config.models import AppConfig, Environment, LoggingConfig
+from autotrader.config.models import AppConfig, ExecutionMode, LoggingConfig
 
 
 class TestDeepMerge:
@@ -34,10 +34,10 @@ class TestDeepMerge:
 
 class TestEnvOverrides:
     def test_simple_override(self) -> None:
-        data: dict = {"kalshi": {"environment": "demo"}}
-        with patch.dict(os.environ, {"AUTOTRADER__KALSHI__ENVIRONMENT": "production"}):
+        data: dict = {"kalshi": {"execution_mode": "paper"}}
+        with patch.dict(os.environ, {"AUTOTRADER__KALSHI__EXECUTION_MODE": "live"}):
             result = _apply_env_overrides(data)
-        assert result["kalshi"]["environment"] == "production"
+        assert result["kalshi"]["execution_mode"] == "live"
 
     def test_creates_nested_keys(self) -> None:
         data: dict = {}
@@ -51,35 +51,34 @@ class TestEnvOverrides:
             result = _apply_env_overrides(data)
         assert "other_var" not in result
 
-    def test_legacy_aliases_are_applied(self) -> None:
-        data: dict = {"kalshi": {"environment": "demo", "execution_mode": "paper"}}
+    def test_legacy_alias_execution_mode(self) -> None:
+        data: dict = {"kalshi": {"execution_mode": "paper"}}
         with patch.dict(
             os.environ,
-            {"ENVIRONMENT": "production", "EXECUTION_MODE": "live"},
+            {"EXECUTION_MODE": "live"},
             clear=True,
         ):
             result = _apply_env_overrides(data)
-        assert result["kalshi"]["environment"] == "production"
         assert result["kalshi"]["execution_mode"] == "live"
 
     def test_namespaced_keys_take_precedence_over_legacy_aliases(self) -> None:
-        data: dict = {"kalshi": {"environment": "demo"}}
+        data: dict = {"kalshi": {"execution_mode": "paper"}}
         with patch.dict(
             os.environ,
             {
-                "ENVIRONMENT": "production",
-                "AUTOTRADER__KALSHI__ENVIRONMENT": "demo",
+                "EXECUTION_MODE": "live",
+                "AUTOTRADER__KALSHI__EXECUTION_MODE": "paper",
             },
             clear=True,
         ):
             result = _apply_env_overrides(data)
-        assert result["kalshi"]["environment"] == "demo"
+        assert result["kalshi"]["execution_mode"] == "paper"
 
 
 class TestAppConfig:
     def test_defaults(self) -> None:
         config = AppConfig()
-        assert config.kalshi.environment == Environment.DEMO
+        assert config.kalshi.execution_mode == ExecutionMode.PAPER
         assert config.risk.global_config.max_portfolio_exposure_pct == 0.60
         assert config.logging.level == "INFO"
 
@@ -89,11 +88,11 @@ class TestAppConfig:
 
     def test_from_dict(self) -> None:
         data = {
-            "kalshi": {"environment": "production"},
+            "kalshi": {"execution_mode": "live"},
             "logging": {"level": "DEBUG"},
         }
         config = AppConfig.from_dict(data)
-        assert config.kalshi.environment == Environment.PRODUCTION
+        assert config.kalshi.execution_mode == ExecutionMode.LIVE
         assert config.logging.level == "DEBUG"
 
 
@@ -101,14 +100,14 @@ class TestLoadConfig:
     def test_load_from_empty_dir(self, tmp_path: Path) -> None:
         """Loading from an empty config dir should return defaults."""
         config = load_config(config_dir=tmp_path)
-        assert config.kalshi.environment == Environment.DEMO
+        assert config.kalshi.execution_mode == ExecutionMode.PAPER
 
     def test_load_with_base_yaml(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
         base.write_text(
             yaml.dump(
                 {
-                    "kalshi": {"environment": "demo"},
+                    "kalshi": {"execution_mode": "paper"},
                     "logging": {"level": "DEBUG"},
                 }
             )
@@ -122,45 +121,45 @@ class TestLoadConfig:
         paper = tmp_path / "paper.yaml"
         paper.write_text(yaml.dump({"logging": {"level": "DEBUG"}}))
 
-        config = load_config(config_dir=tmp_path, environment="demo")
+        config = load_config(config_dir=tmp_path, execution_mode="paper")
         assert config.logging.level == "DEBUG"
 
     def test_live_overlay(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
-        base.write_text(yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "DEBUG"}}))
+        base.write_text(yaml.dump({"kalshi": {"execution_mode": "paper"}, "logging": {"level": "DEBUG"}}))
         live = tmp_path / "live.yaml"
-        live.write_text(yaml.dump({"kalshi": {"environment": "production"}, "logging": {"level": "INFO"}}))
+        live.write_text(yaml.dump({"kalshi": {"execution_mode": "live"}, "logging": {"level": "INFO"}}))
 
-        config = load_config(config_dir=tmp_path, environment="production")
-        assert config.kalshi.environment == Environment.PRODUCTION
+        config = load_config(config_dir=tmp_path, execution_mode="live")
+        assert config.kalshi.execution_mode == ExecutionMode.LIVE
         assert config.logging.level == "INFO"
 
     def test_environment_variable_overrides_live_overlay(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
-        base.write_text(yaml.dump({"kalshi": {"environment": "demo"}, "logging": {"level": "INFO"}}))
+        base.write_text(yaml.dump({"kalshi": {"execution_mode": "live"}, "logging": {"level": "INFO"}}))
         live = tmp_path / "live.yaml"
-        live.write_text(yaml.dump({"kalshi": {"environment": "production"}, "logging": {"level": "WARNING"}}))
+        live.write_text(yaml.dump({"logging": {"level": "WARNING"}}))
 
         with patch.dict(
             os.environ,
             {
-                "AUTOTRADER__KALSHI__ENVIRONMENT": "demo",
+                "AUTOTRADER__KALSHI__EXECUTION_MODE": "paper",
                 "AUTOTRADER__LOGGING__LEVEL": "DEBUG",
             },
             clear=False,
         ):
-            config = load_config(config_dir=tmp_path, environment="production")
+            config = load_config(config_dir=tmp_path, execution_mode="live")
 
-        assert config.kalshi.environment == Environment.DEMO
+        assert config.kalshi.execution_mode == ExecutionMode.PAPER
         assert config.logging.level == "DEBUG"
 
-    def test_legacy_environment_selects_live_overlay(self, tmp_path: Path) -> None:
+    def test_legacy_execution_mode_selects_live_overlay(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"
         base.write_text(yaml.dump({"logging": {"level": "DEBUG"}}))
         live = tmp_path / "live.yaml"
         live.write_text(yaml.dump({"logging": {"level": "WARNING"}}))
 
-        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=True):
+        with patch.dict(os.environ, {"EXECUTION_MODE": "live"}, clear=True):
             config = load_config(config_dir=tmp_path)
 
         assert config.logging.level == "WARNING"

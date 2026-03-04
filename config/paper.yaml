@@ -1,7 +1,6 @@
-# Paper trading (demo) environment overrides.
+# Paper trading overrides.
 
 kalshi:
-  environment: demo
   execution_mode: paper
 
 logging:

@@ -291,6 +291,92 @@ class LeaderboardAlphaStrategy(Strategy):
             mapped_orgs=len(self._org_ticker_map),
         )
 
+    def validate_mappings(self) -> dict[str, Any]:
+        """Validate that top-N Arena models/orgs map to Kalshi contracts.
+
+        Attempts resolution for every top-N entry (not just those already
+        cached by ``seed_rankings``, which only covers the top 10).
+
+        Returns a report dict with:
+        - ``mapped_models``: list of ``{model, ticker, series}`` dicts
+        - ``unmapped_models``: list of ``{model, rank_ub, series, reason}`` dicts
+        - ``mapped_orgs``: list of ``{org, ticker, series}`` dicts
+        - ``unmapped_orgs``: list of ``{org, best_model_rank_ub, series, reason}`` dicts
+
+        The trading loop calls this after ``seed_rankings`` and sends a
+        Discord alert if any top-N entries are unmapped.
+        """
+        top_n = self._config.mapping_validation_top_n
+        ranked = sorted(
+            (e for e in self._rankings.values() if e.rank_ub > 0),
+            key=lambda e: e.rank_ub,
+        )[:top_n]
+
+        mapped_models: list[dict[str, Any]] = []
+        unmapped_models: list[dict[str, Any]] = []
+        mapped_orgs: list[dict[str, Any]] = []
+        unmapped_orgs: list[dict[str, Any]] = []
+        seen_orgs: set[str] = set()
+
+        for entry in ranked:
+            # --- KXTOPMODEL: model → contract ---
+            # Attempt resolution (returns cached result if already resolved)
+            ticker = self._resolve_ticker(entry.model_name, series="KXTOPMODEL")
+            if ticker:
+                mapped_models.append({"model": entry.model_name, "ticker": ticker, "series": "KXTOPMODEL"})
+            else:
+                unmapped_models.append(
+                    {
+                        "model": entry.model_name,
+                        "rank_ub": entry.rank_ub,
+                        "series": "KXTOPMODEL",
+                        "reason": "no Kalshi contract matched",
+                    }
+                )
+
+            # --- KXLLM1: org → contract ---
+            org = entry.organization
+            if not org or org in seen_orgs:
+                continue
+            seen_orgs.add(org)
+            org_ticker = self._resolve_ticker(org, series="KXLLM1")
+            if org_ticker:
+                mapped_orgs.append({"org": org, "ticker": org_ticker, "series": "KXLLM1"})
+            else:
+                unmapped_orgs.append(
+                    {
+                        "org": org,
+                        "best_model_rank_ub": entry.rank_ub,
+                        "series": "KXLLM1",
+                        "reason": "no Kalshi contract matched",
+                    }
+                )
+
+        report = {
+            "top_n": top_n,
+            "mapped_models": mapped_models,
+            "unmapped_models": unmapped_models,
+            "mapped_orgs": mapped_orgs,
+            "unmapped_orgs": unmapped_orgs,
+        }
+        logger.info(
+            "mapping_validation",
+            strategy=self.name,
+            top_n=top_n,
+            models_mapped=len(mapped_models),
+            models_unmapped=len(unmapped_models),
+            orgs_mapped=len(mapped_orgs),
+            orgs_unmapped=len(unmapped_orgs),
+        )
+        if unmapped_models or unmapped_orgs:
+            logger.warning(
+                "mapping_validation_gaps",
+                strategy=self.name,
+                unmapped_models=[m["model"] for m in unmapped_models],
+                unmapped_orgs=[o["org"] for o in unmapped_orgs],
+            )
+        return report
+
     # ── Fair value ────────────────────────────────────────────────────
 
     def estimate_fair_value(self, model_name: str) -> int | None:
@@ -805,7 +891,6 @@ class LeaderboardAlphaStrategy(Strategy):
                 q,
                 candidates,
                 threshold=self._config.fuzzy_match_threshold,
-                overrides=self._config.model_name_overrides,
             )
             if match is not None:
                 break

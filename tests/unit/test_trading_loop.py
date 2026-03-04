@@ -15,7 +15,6 @@ from autotrader.config.models import (
     AppConfig,
     ArenaMonitorConfig,
     DiscordConfig,
-    Environment,
     ExecutionMode,
     KalshiConfig,
     LeaderboardAlphaConfig,
@@ -99,7 +98,7 @@ class TestTradingLoopInit:
         monkeypatch.setattr("autotrader.core.loop.KalshiAPIClient", MagicMock(return_value=mock_client))
 
         config = _config()
-        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION, execution_mode=ExecutionMode.LIVE)
+        config.kalshi = KalshiConfig(execution_mode=ExecutionMode.LIVE)
 
         loop = TradingLoop(config)
         await loop.initialize(
@@ -238,7 +237,7 @@ class TestTradingLoopInit:
 
     async def test_initialize_production_raises_when_expected_series_missing_markets(self) -> None:
         config = _config()
-        config.kalshi = KalshiConfig(environment=Environment.PRODUCTION, execution_mode=ExecutionMode.LIVE)
+        config.kalshi = KalshiConfig(execution_mode=ExecutionMode.LIVE)
 
         loop = TradingLoop(config)
         with pytest.raises(RuntimeError, match="no_tradable_markets_loaded"):

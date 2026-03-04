@@ -41,13 +41,13 @@ class TestSubscription:
 
 
 class TestWebSocketClientInit:
-    def test_demo_url(self) -> None:
-        client = KalshiWebSocketClient(is_demo=True)
-        assert "demo-api.kalshi.co" in client._ws_url
-
-    def test_prod_url(self) -> None:
-        client = KalshiWebSocketClient(is_demo=False)
+    def test_default_url(self) -> None:
+        client = KalshiWebSocketClient()
         assert "trading-api.kalshi.com" in client._ws_url
+
+    def test_custom_url(self) -> None:
+        client = KalshiWebSocketClient(ws_url="wss://custom.example.com/ws")
+        assert client._ws_url == "wss://custom.example.com/ws"
 
     def test_not_connected_initially(self) -> None:
         client = KalshiWebSocketClient()

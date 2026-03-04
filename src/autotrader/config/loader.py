@@ -8,10 +8,9 @@ from typing import Any
 
 import yaml
 
-from autotrader.config.models import AppConfig, Environment
+from autotrader.config.models import AppConfig
 
 _LEGACY_ENV_ALIASES = {
-    "ENVIRONMENT": "AUTOTRADER__KALSHI__ENVIRONMENT",
     "EXECUTION_MODE": "AUTOTRADER__KALSHI__EXECUTION_MODE",
 }
 
@@ -41,7 +40,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
 
     Convention: AUTOTRADER__SECTION__KEY=value
     Double underscore separates nesting levels.
-    Example: AUTOTRADER__KALSHI__ENVIRONMENT=production
+    Example: AUTOTRADER__KALSHI__EXECUTION_MODE=paper
     """
     prefix = "AUTOTRADER__"
     env_vars = dict(os.environ)
@@ -66,37 +65,37 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
 
 def load_config(
     config_dir: Path | str = "config",
-    environment: str | None = None,
+    execution_mode: str | None = None,
 ) -> AppConfig:
     """Load configuration from YAML files with environment overrides.
 
     Loading order (later values override earlier):
     1. config/base.yaml
-    2. config/paper.yaml (demo) or config/live.yaml (production)
+    2. config/paper.yaml or config/live.yaml (selected by execution mode)
     3. config/strategies/*.yaml (merged under strategy keys)
     4. config/risk.yaml
     5. config/signal_sources/*.yaml
     6. Environment variables (AUTOTRADER__SECTION__KEY)
 
-    The optional ``environment`` argument (or ``AUTOTRADER__KALSHI__ENVIRONMENT``)
-    selects which environment overlay file is loaded in step 2. Final environment
+    The optional ``execution_mode`` argument (or ``AUTOTRADER__KALSHI__EXECUTION_MODE``)
+    selects which overlay file is loaded in step 2.  Final environment
     variable overrides from step 6 still take precedence over every YAML file.
     """
     config_dir = Path(config_dir)
 
-    # Determine environment
+    # Determine execution mode for overlay selection
     env_vars = dict(os.environ)
-    if "AUTOTRADER__KALSHI__ENVIRONMENT" not in env_vars and "ENVIRONMENT" in env_vars:
-        env_vars["AUTOTRADER__KALSHI__ENVIRONMENT"] = env_vars["ENVIRONMENT"]
-    env = environment or env_vars.get("AUTOTRADER__KALSHI__ENVIRONMENT", "demo")
+    if "AUTOTRADER__KALSHI__EXECUTION_MODE" not in env_vars and "EXECUTION_MODE" in env_vars:
+        env_vars["AUTOTRADER__KALSHI__EXECUTION_MODE"] = env_vars["EXECUTION_MODE"]
+    mode = execution_mode or env_vars.get("AUTOTRADER__KALSHI__EXECUTION_MODE", "paper")
 
     # Layer 1: base config
     data = _load_yaml(config_dir / "base.yaml")
 
-    # Layer 2: environment overlay
-    env_file = "paper.yaml" if env == Environment.DEMO.value else "live.yaml"
-    env_data = _load_yaml(config_dir / env_file)
-    data = _deep_merge(data, env_data)
+    # Layer 2: execution mode overlay
+    overlay_file = "paper.yaml" if mode == "paper" else "live.yaml"
+    overlay_data = _load_yaml(config_dir / overlay_file)
+    data = _deep_merge(data, overlay_data)
 
     # Layer 3: strategy configs
     strategies_dir = config_dir / "strategies"
