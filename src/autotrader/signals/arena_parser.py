@@ -563,7 +563,7 @@ def _collect_cell_segments(tag: Tag) -> tuple[str, list[str]]:
     for child in tag.children:
         if isinstance(child, Tag):
             if child.name == "img":
-                alt = child.get("alt", "") or ""  # type: ignore[assignment]
+                alt = child.get("alt", "") or ""
                 if isinstance(alt, list):
                     alt = " ".join(alt)
                 alt = alt.strip()
