@@ -276,9 +276,16 @@ class LeaderboardAlphaStrategy(Strategy):
         self._rebuild_org_rankings()
 
         # Eagerly resolve tickers for competitive models
-        for entry in entries:
-            if entry.rank_ub <= 0 or entry.rank_ub > 10:
-                continue
+        eligible = [e for e in entries if 0 < e.rank_ub <= 10]
+        if not eligible:
+            logger.warning(
+                "seed_rankings_no_eligible_models",
+                strategy=self.name,
+                total_entries=len(entries),
+                sample_rank_ubs=[e.rank_ub for e in entries[:10]],
+                hint="No entries with 0 < rank_ub <= 10; check arena parser output",
+            )
+        for entry in eligible:
             self._resolve_ticker(entry.model_name, series="KXTOPMODEL")
             if entry.organization:
                 self._resolve_ticker(entry.organization, series="KXLLM1")
@@ -287,6 +294,7 @@ class LeaderboardAlphaStrategy(Strategy):
             "rankings_seeded",
             strategy=self.name,
             model_count=len(entries),
+            eligible_for_mapping=len(eligible),
             mapped_models=len(self._model_ticker_map),
             mapped_orgs=len(self._org_ticker_map),
         )

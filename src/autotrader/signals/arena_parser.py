@@ -187,9 +187,12 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
 
     # Map header text to column indices
     col_map = _build_column_map(headers)
+    logger.debug("html_table_column_map", col_map=col_map, headers=headers)
     if "name" not in col_map:
         logger.warning("no_model_name_column", headers=headers)
         return []
+    if "rank" not in col_map and "rank_ub" not in col_map:
+        logger.warning("no_rank_column_found", headers=headers, col_map=col_map)
 
     # Parse rows
     entries: list[LeaderboardEntry] = []
