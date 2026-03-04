@@ -507,3 +507,43 @@ class TestPairwiseExtraction:
         ]
         entries = parse_json_entries(data)
         assert entries[0].release_date == "2025-01-01"
+
+
+# ── Wrapped / deeply-nested HTML layout ──────────────────────────────
+
+
+class TestParseHtmlTableWrappedLayout:
+    """Regression tests: model cell content wrapped in extra <div>/<a> elements.
+
+    The arena.ai site sometimes wraps model cell children in container
+    elements (div, a), which caused the parser to concatenate all text
+    into one segment (e.g. 'Anthropicclaude-opus-4-6Anthropic · Proprietary').
+    """
+
+    @pytest.fixture
+    def wrapped_html(self) -> str:
+        return (FIXTURES / "arena_leaderboard_wrapped.html").read_text()
+
+    def test_model_names_extracted_correctly(self, wrapped_html: str) -> None:
+        entries = parse_html_table(wrapped_html)
+        assert len(entries) == 5
+        assert entries[0].model_name == "claude-opus-4-6"
+        assert entries[1].model_name == "gemini-3.1-pro-preview"
+        assert entries[2].model_name == "grok-4.20-beta1"
+        assert entries[3].model_name == "claude-opus-4-6-thinking"
+        assert entries[4].model_name == "gpt-5.2-chat-latest-20260210"
+
+    def test_orgs_extracted_correctly(self, wrapped_html: str) -> None:
+        entries = parse_html_table(wrapped_html)
+        assert entries[0].organization == "Anthropic"
+        assert entries[1].organization == "Google"
+        assert entries[2].organization == "xAI"
+        assert entries[3].organization == "Anthropic"
+        assert entries[4].organization == "OpenAI"
+
+    def test_model_names_not_concatenated(self, wrapped_html: str) -> None:
+        """No model name should contain the org name concatenated into it."""
+        entries = parse_html_table(wrapped_html)
+        for entry in entries:
+            assert "Anthropic" not in entry.model_name or entry.model_name == "Anthropic"
+            assert "Proprietary" not in entry.model_name

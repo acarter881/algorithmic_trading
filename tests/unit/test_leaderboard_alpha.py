@@ -11,7 +11,11 @@ from autotrader.config.models import LeaderboardAlphaConfig
 from autotrader.signals.arena_types import LeaderboardEntry
 from autotrader.signals.base import Signal, SignalUrgency
 from autotrader.strategies.base import OrderUrgency
-from autotrader.strategies.leaderboard_alpha import LeaderboardAlphaStrategy, rank_to_probability
+from autotrader.strategies.leaderboard_alpha import (
+    LeaderboardAlphaStrategy,
+    _extract_contract_name,
+    rank_to_probability,
+)
 
 if TYPE_CHECKING:
     from autotrader.utils.fees import FeeCalculator
@@ -1638,3 +1642,38 @@ class TestMispricingDetection:
 
         assert len(proposals) >= 1
         assert proposals[0].urgency == OrderUrgency.AGGRESSIVE
+
+
+# ── _extract_contract_name ────────────────────────────────────────────
+
+
+class TestExtractContractName:
+    """Tests for extracting clean model/org names from Kalshi contract fields."""
+
+    def test_normal_subtitle(self) -> None:
+        assert _extract_contract_name("Claude Opus 4.6", "") == "Claude Opus 4.6"
+
+    def test_empty_subtitle_falls_back_to_title(self) -> None:
+        result = _extract_contract_name("", "Claude Opus 4.6 will be the #1 AI model")
+        assert result == "Claude Opus 4.6"
+
+    def test_empty_subtitle_org_title(self) -> None:
+        result = _extract_contract_name("", "Anthropic will have the #1 AI model")
+        assert result == "Anthropic"
+
+    def test_double_colon_format_extracts_first_part(self) -> None:
+        assert _extract_contract_name("Claude:: Anthropic", "") == "Claude"
+
+    def test_double_colon_format_with_spaces(self) -> None:
+        assert _extract_contract_name("Gemini 3 Pro:: Google", "") == "Gemini 3 Pro"
+
+    def test_both_empty(self) -> None:
+        assert _extract_contract_name("", "") == ""
+
+    def test_subtitle_preferred_over_title(self) -> None:
+        result = _extract_contract_name("GPT-5", "GPT-5 will be the #1 AI model")
+        assert result == "GPT-5"
+
+    def test_another_title_pattern(self) -> None:
+        result = _extract_contract_name("", "Another AI model will be #1")
+        assert result == "Another AI model will be #1"  # unrecognised pattern kept
