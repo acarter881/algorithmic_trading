@@ -43,8 +43,9 @@ def _migrate_missing_columns(engine: Engine) -> None:
             col_type = column.type.compile(engine.dialect)
             nullable = "NULL" if column.nullable else "NOT NULL"
             default = ""
-            if column.server_default is not None:
-                default = f" DEFAULT {column.server_default.arg}"
+            sd = column.server_default
+            if sd is not None and hasattr(sd, "arg"):
+                default = f" DEFAULT {sd.arg}"
             elif not column.nullable:
                 # SQLite requires a default for NOT NULL on existing rows
                 default = " DEFAULT ''"

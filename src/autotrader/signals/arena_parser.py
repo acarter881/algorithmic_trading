@@ -194,6 +194,17 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
     if "rank" not in col_map and "rank_ub" not in col_map:
         logger.warning("no_rank_column_found", headers=headers, col_map=col_map)
 
+    # Determine if the name column uses nested elements (arena.ai layout)
+    # vs plain text (simple table layout).
+    name_col_idx = col_map["name"]
+    has_separate_org_col = "org" in col_map
+
+    # When rank and rank_ub map to different columns, use rank_ub for the
+    # spread and rank for the display rank.  When they map to the same
+    # column, _parse_rank_range extracts both from the same cell.
+    rank_col = col_map.get("rank", -1)
+    rank_ub_col = col_map.get("rank_ub", -1)
+
     # Parse rows
     entries: list[LeaderboardEntry] = []
     rows = table.find_all("tr")
@@ -203,16 +214,26 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
             continue
 
         cell_texts = [_clean_cell(c) for c in cells]
-        name = cell_texts[col_map["name"]] if col_map["name"] < len(cell_texts) else ""
+
+        # Extract model name (and possibly org) from the name cell
+        if name_col_idx < len(cells):
+            name, cell_org = _extract_model_cell(cells[name_col_idx])
+        else:
+            name, cell_org = "", ""
         if not name:
             continue
 
-        rank = _safe_int(cell_texts[col_map["rank"]]) if "rank" in col_map else 0
-        rank_ub, rank_lb = _parse_rank_range(
-            cell_texts[col_map.get("rank", col_map.get("rank_ub", -1))]
-            if "rank" in col_map or "rank_ub" in col_map
-            else ""
-        )
+        # Display rank (from "Rank" column)
+        rank = _safe_int(cell_texts[rank_col]) if rank_col >= 0 and rank_col < len(cell_texts) else 0
+
+        # Rank spread / rank_ub (prefer dedicated "Rank Spread" column)
+        if rank_ub_col >= 0 and rank_ub_col != rank_col and rank_ub_col < len(cell_texts):
+            rank_ub, rank_lb = _parse_rank_range(cell_texts[rank_ub_col])
+        elif rank_col >= 0 and rank_col < len(cell_texts):
+            rank_ub, rank_lb = _parse_rank_range(cell_texts[rank_col])
+        else:
+            rank_ub, rank_lb = 0, 0
+
         if rank_ub == 0:
             rank_ub = rank
         if rank_lb == 0:
@@ -221,7 +242,13 @@ def parse_html_table(html: str) -> list[LeaderboardEntry]:
         score = _safe_float(cell_texts[col_map["score"]]) if "score" in col_map else 0.0
         ci_lower, ci_upper = _parse_ci(cell_texts[col_map["ci"]]) if "ci" in col_map else (0.0, 0.0)
         votes = _safe_int(cell_texts[col_map["votes"]]) if "votes" in col_map else 0
-        org = cell_texts[col_map["org"]] if "org" in col_map else ""
+
+        # Organization: prefer dedicated column, fall back to model cell extraction
+        if has_separate_org_col:
+            org = cell_texts[col_map["org"]] if col_map["org"] < len(cell_texts) else ""
+        else:
+            org = cell_org
+
         release_date = cell_texts[col_map["release_date"]] if "release_date" in col_map else ""
 
         entries.append(
@@ -494,7 +521,7 @@ def _extract_headers(table: Tag) -> list[str]:
 _COLUMN_ALIASES: dict[str, list[str]] = {
     "name": ["model", "model name", "name", "model_name", "full_name"],
     "rank": ["rank", "#", "rank (ub)", "rank(ub)", "ranking"],
-    "rank_ub": ["rank (ub)", "rank(ub)", "rank_ub", "upper bound"],
+    "rank_ub": ["rank (ub)", "rank(ub)", "rank_ub", "upper bound", "rank spread"],
     "score": ["arena score", "score", "elo", "rating", "elo rating", "arena elo"],
     "ci": ["95% ci", "ci", "confidence interval", "95% confidence interval", "ci (95%)"],
     "votes": ["votes", "battles", "num battles", "num_battles", "total votes"],
@@ -522,6 +549,80 @@ def _clean_cell(cell: Tag) -> str:
     return text
 
 
+def _extract_model_cell(cell: Tag) -> tuple[str, str]:
+    """Extract (model_name, organization) from a Model column cell.
+
+    The arena.ai table packs multiple pieces of info into the Model cell:
+    icon + model name + org label (e.g. "Anthropic · Proprietary").
+
+    Strategy:
+    1. Look for sub-elements and use separator-based heuristics.
+    2. Treat image alt text as potential org name.
+    3. Treat text after a "·" separator as org metadata.
+    4. If the cell is plain text, return it as-is with no org.
+    """
+    # Collect direct text segments from child elements (not recursively
+    # concatenated), so we can distinguish model name from org label.
+    children = list(cell.children)
+    text_segments: list[str] = []
+    img_alt = ""
+
+    for child in children:
+        if isinstance(child, Tag):
+            if child.name == "img":
+                img_alt = child.get("alt", "") or ""  # type: ignore[assignment]
+                if isinstance(img_alt, list):
+                    img_alt = " ".join(img_alt)
+                img_alt = img_alt.strip()
+            else:
+                segment = child.get_text(strip=True)
+                if segment:
+                    text_segments.append(segment)
+        else:
+            # NavigableString
+            segment = str(child).strip()
+            if segment:
+                text_segments.append(segment)
+
+    # If the cell has no sub-elements, fall back to plain text extraction
+    if not text_segments:
+        plain = _clean_cell(cell)
+        return plain, ""
+
+    # Heuristic: if there are multiple segments, the first non-org one
+    # is typically the model name, and segments containing "·" or matching
+    # the img alt are organization labels.
+    model_name = ""
+    org_parts: list[str] = []
+
+    for segment in text_segments:
+        cleaned = segment.replace("\u200b", "").replace("\xa0", " ").strip()
+        if not cleaned:
+            continue
+        # Segments with "·" are org metadata (e.g. "Anthropic · Proprietary")
+        if "·" in cleaned:
+            org_parts.append(cleaned.split("·")[0].strip())
+            continue
+        # Segments that match the img alt text are org icon labels
+        if img_alt and cleaned == img_alt:
+            org_parts.append(cleaned)
+            continue
+        # First remaining segment is the model name
+        if not model_name:
+            model_name = cleaned
+        else:
+            # Additional segments — could be org or extra metadata
+            org_parts.append(cleaned)
+
+    org = org_parts[0] if org_parts else ""
+
+    # If no structured extraction worked, fall back to plain text
+    if not model_name:
+        model_name = _clean_cell(cell)
+
+    return model_name, org
+
+
 def _parse_rank_range(text: str) -> tuple[int, int]:
     """Parse a rank that may be a range like '1-3' or a single number.
 
@@ -530,7 +631,7 @@ def _parse_rank_range(text: str) -> tuple[int, int]:
     if not text:
         return 0, 0
     text = text.strip()
-    m = re.match(r"(\d+)\s*[-–—]\s*(\d+)", text)
+    m = re.match(r"(\d+)\s*[-–—↔⟷]\s*(\d+)", text)
     if m:
         a, b = int(m.group(1)), int(m.group(2))
         return max(a, b), min(a, b)  # ub, lb
