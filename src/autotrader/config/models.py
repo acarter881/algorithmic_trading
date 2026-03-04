@@ -29,7 +29,7 @@ class ExecutionMode(StrEnum):
 class KalshiConfig(BaseModel):
     """Kalshi API connection settings."""
 
-    environment: Environment = Environment.DEMO
+    environment: Environment = Environment.PRODUCTION
     execution_mode: ExecutionMode = ExecutionMode.PAPER
     api_key_id: str = ""
     private_key_path: str = ""
@@ -101,7 +101,7 @@ class LeaderboardAlphaConfig(BaseModel):
     max_position_per_event: float = 250.00
     preliminary_model_discount: float = Field(default=0.3, ge=0.0, le=1.0)
     fuzzy_match_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
-    model_name_overrides: dict[str, str] = Field(default_factory=dict)
+    mapping_validation_top_n: int = Field(default=20, ge=1)
     target_series: list[str] = Field(default_factory=lambda: ["KXTOPMODEL", "KXLLM1"])
     mispricing_detection_enabled: bool = True
     mispricing_min_edge_cents: int = 5

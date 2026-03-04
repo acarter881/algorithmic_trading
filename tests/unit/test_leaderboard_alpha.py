@@ -30,7 +30,6 @@ def _config(**overrides: object) -> LeaderboardAlphaConfig:
         "preliminary_model_discount": 0.3,
         "fuzzy_match_threshold": 0.8,
         "target_series": ["KXTOPMODEL"],
-        "model_name_overrides": {},
     }
     defaults.update(overrides)
     return LeaderboardAlphaConfig(**defaults)  # type: ignore[arg-type]
@@ -1069,26 +1068,6 @@ class TestTickerResolution:
         )
         orders = await s.on_signal(signal)
         assert len(orders) == 1
-
-    async def test_override_match(self) -> None:
-        s = _strategy(_config(model_name_overrides={"arena-gpt5": "GPT-5"}))
-        await s.initialize(MARKET_DATA, None)
-        s.set_rankings({"arena-gpt5": _entry(name="arena-gpt5", rank_ub=1)})
-
-        signal = _signal(
-            "ranking_change",
-            {
-                "model_name": "arena-gpt5",
-                "old_rank_ub": 3,
-                "new_rank_ub": 1,
-                "old_rank": 3,
-                "new_rank": 1,
-                "old_score": 1300.0,
-                "new_score": 1350.0,
-            },
-        )
-        await s.on_signal(signal)
-        assert s.model_ticker_map.get("arena-gpt5") == "KXTOPMODEL-GPT5"
 
     async def test_cached_resolution(self) -> None:
         s = _strategy()

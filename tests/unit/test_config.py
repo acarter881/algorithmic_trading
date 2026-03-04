@@ -79,7 +79,7 @@ class TestEnvOverrides:
 class TestAppConfig:
     def test_defaults(self) -> None:
         config = AppConfig()
-        assert config.kalshi.environment == Environment.DEMO
+        assert config.kalshi.environment == Environment.PRODUCTION
         assert config.risk.global_config.max_portfolio_exposure_pct == 0.60
         assert config.logging.level == "INFO"
 
@@ -101,7 +101,7 @@ class TestLoadConfig:
     def test_load_from_empty_dir(self, tmp_path: Path) -> None:
         """Loading from an empty config dir should return defaults."""
         config = load_config(config_dir=tmp_path)
-        assert config.kalshi.environment == Environment.DEMO
+        assert config.kalshi.environment == Environment.PRODUCTION
 
     def test_load_with_base_yaml(self, tmp_path: Path) -> None:
         base = tmp_path / "base.yaml"

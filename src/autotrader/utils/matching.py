@@ -15,7 +15,6 @@ class MatchResult:
     query: str
     matched: str
     score: float  # 0.0 to 1.0
-    is_override: bool  # True if matched via manual override table
 
 
 def normalize_model_name(name: str) -> str:
@@ -51,37 +50,18 @@ def fuzzy_match(
     query: str,
     candidates: list[str],
     threshold: float = 0.8,
-    overrides: dict[str, str] | None = None,
 ) -> MatchResult | None:
     """Match a model name against a list of candidates.
-
-    Checks manual overrides first, then falls back to fuzzy matching.
 
     Args:
         query: The model name to match (e.g., from Arena leaderboard).
         candidates: List of candidate names (e.g., from Kalshi tickers).
         threshold: Minimum similarity score (0.0-1.0) to accept a match.
-        overrides: Manual override mapping (arena_name -> kalshi_name).
 
     Returns:
         MatchResult if a match is found, None otherwise.
     """
     normalized_query = normalize_model_name(query)
-
-    # Check overrides first
-    if overrides:
-        for override_key, override_value in overrides.items():
-            if normalize_model_name(override_key) == normalized_query:
-                # Verify the override target exists in candidates
-                normalized_candidates = {normalize_model_name(c): c for c in candidates}
-                normalized_override = normalize_model_name(override_value)
-                if normalized_override in normalized_candidates:
-                    return MatchResult(
-                        query=query,
-                        matched=normalized_candidates[normalized_override],
-                        score=1.0,
-                        is_override=True,
-                    )
 
     # Try exact match first
     normalized_candidates = {normalize_model_name(c): c for c in candidates}
@@ -90,7 +70,6 @@ def fuzzy_match(
             query=query,
             matched=normalized_candidates[normalized_query],
             score=1.0,
-            is_override=False,
         )
 
     # Fuzzy match
@@ -108,7 +87,6 @@ def fuzzy_match(
             query=query,
             matched=best_candidate,
             score=best_score,
-            is_override=False,
         )
 
     return None

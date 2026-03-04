@@ -249,7 +249,7 @@ autotrader run --config-dir config
 
 Configuration is loaded in layers (later values override earlier):
 1. `config/base.yaml` — defaults
-2. `config/paper.yaml` or `config/live.yaml` — environment overlay (selected by `ENVIRONMENT`: `demo` → `paper.yaml`, `production` → `live.yaml`)
+2. `config/paper.yaml` or `config/live.yaml` — environment overlay (`demo` → `paper.yaml`, `production` → `live.yaml`)
 3. `config/strategies/*.yaml` — strategy parameters
 4. `config/risk.yaml` — risk limits
 5. `config/signal_sources/*.yaml` — signal source parameters
@@ -265,7 +265,7 @@ Copy `.env.example` to `.env` and fill in your Kalshi API credentials.
 |----------|-------------|----------|
 | `AUTOTRADER__KALSHI__API_KEY_ID` | Kalshi API key ID | Yes |
 | `AUTOTRADER__KALSHI__PRIVATE_KEY_PATH` | Path to RSA private key `.pem` file | Yes |
-| `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` or `production` — controls which Kalshi API endpoint is used | No (default: `demo`) |
+| `AUTOTRADER__KALSHI__ENVIRONMENT` | `demo` or `production` — controls which Kalshi API endpoint is used | No (default: `production`) |
 | `AUTOTRADER__KALSHI__EXECUTION_MODE` | `paper` (simulated fills) or `live` (real orders) — independent of environment | No (default: `paper`) |
 | `AUTOTRADER__KALSHI__WEBSOCKET_ENABLED` | Enable real-time WebSocket market data instead of REST polling | No (default: `false`) |
 | `AUTOTRADER__DISCORD__WEBHOOK_URL` | Discord webhook for alerts | No |
@@ -313,7 +313,7 @@ Use this checklist before switching from paper execution to live execution:
 | `autotrader calc-fee <price> <qty>` | Calculate taker/maker fees for a trade |
 | `autotrader replay <signals.json>` | Replay historical signals through the strategy for backtesting |
 
-Most commands accept `--config-dir` (default: `config`). `run` and `preflight` also accept `--environment demo|production`. `calc-fee` is standalone and does not require configuration.
+Most commands accept `--config-dir` (default: `config`). `run` and `preflight` also accept `--environment demo|production` (default: `production`). `calc-fee` is standalone and does not require configuration.
 
 ## Backtesting
 

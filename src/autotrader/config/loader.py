@@ -72,7 +72,7 @@ def load_config(
 
     Loading order (later values override earlier):
     1. config/base.yaml
-    2. config/paper.yaml (demo) or config/live.yaml (production)
+    2. config/paper.yaml (paper) or config/live.yaml (production)
     3. config/strategies/*.yaml (merged under strategy keys)
     4. config/risk.yaml
     5. config/signal_sources/*.yaml
@@ -88,7 +88,7 @@ def load_config(
     env_vars = dict(os.environ)
     if "AUTOTRADER__KALSHI__ENVIRONMENT" not in env_vars and "ENVIRONMENT" in env_vars:
         env_vars["AUTOTRADER__KALSHI__ENVIRONMENT"] = env_vars["ENVIRONMENT"]
-    env = environment or env_vars.get("AUTOTRADER__KALSHI__ENVIRONMENT", "demo")
+    env = environment or env_vars.get("AUTOTRADER__KALSHI__ENVIRONMENT", "production")
 
     # Layer 1: base config
     data = _load_yaml(config_dir / "base.yaml")

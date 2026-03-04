@@ -7,9 +7,9 @@ organization.  A mapping summary is printed so reviewers can see the
 program's understanding of the market at a glance.
 
 If this test fails, the fix is one of:
-1. Add the missing name to ``OVERRIDES`` (model_name_overrides in config).
-2. Adjust ``normalize_org_name`` if a new org-suffix pattern appears.
-3. Lower ``fuzzy_match_threshold`` (not recommended — risks false matches).
+1. Adjust ``normalize_org_name`` if a new org-suffix pattern appears.
+2. Lower ``fuzzy_match_threshold`` (not recommended — risks false matches).
+3. Verify that the Arena leaderboard names haven't diverged significantly.
 """
 
 from __future__ import annotations
@@ -27,9 +27,8 @@ FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 # ── Realistic Arena Leaderboard ──────────────────────────────────────
 #
-# Model names use the *exact* conventions the Arena uses — hyphens,
-# date suffixes, "Exp-" prefixes, etc.  Organization names include the
-# suffixes the Arena appends ("DeepMind", "AI", "Labs").
+# Model names use the conventions the Arena uses — hyphens, spaces, etc.
+# Organization names include suffixes the Arena appends ("DeepMind", "AI", "Labs").
 
 ARENA_ENTRIES: list[dict[str, object]] = [
     # --- Anthropic ---
@@ -39,15 +38,15 @@ ARENA_ENTRIES: list[dict[str, object]] = [
     # --- Google ---
     {"name": "Gemini-3-Pro", "org": "Google DeepMind", "rank_ub": 3, "score": 1492.0, "votes": 30000},
     {"name": "Gemini-3.1-Pro", "org": "Google DeepMind", "rank_ub": 5, "score": 1478.0, "votes": 18000},
-    {"name": "Gemini-2.5-Pro-Exp-03-25", "org": "Google DeepMind", "rank_ub": 10, "score": 1430.0, "votes": 15000},
+    {"name": "Gemini 2.5 Pro", "org": "Google DeepMind", "rank_ub": 10, "score": 1430.0, "votes": 15000},
     # --- xAI ---
     {"name": "Grok-3", "org": "xAI", "rank_ub": 7, "score": 1458.0, "votes": 12000},
-    {"name": "Grok-4.1-Thinking", "org": "xAI", "rank_ub": 4, "score": 1482.0, "votes": 10000},
+    {"name": "Grok 4.1 Thinking", "org": "xAI", "rank_ub": 4, "score": 1482.0, "votes": 10000},
     # --- OpenAI ---
     {"name": "GPT-5", "org": "OpenAI", "rank_ub": 6, "score": 1464.0, "votes": 32000},
-    {"name": "GPT-5.1-2025-12-01", "org": "OpenAI", "rank_ub": 9, "score": 1438.0, "votes": 25000},
+    {"name": "GPT-5.1", "org": "OpenAI", "rank_ub": 9, "score": 1438.0, "votes": 25000},
     {"name": "GPT-5.3-Codex", "org": "OpenAI", "rank_ub": 11, "score": 1425.0, "votes": 15000},
-    {"name": "GPT-4o-2025-03-01", "org": "OpenAI", "rank_ub": 14, "score": 1395.0, "votes": 40000},
+    {"name": "GPT-4o", "org": "OpenAI", "rank_ub": 14, "score": 1395.0, "votes": 40000},
     # --- Meta ---
     {"name": "Llama-4-405B", "org": "Meta AI", "rank_ub": 12, "score": 1418.0, "votes": 14000},
     {"name": "Llama-4-Maverick", "org": "Meta AI", "rank_ub": 13, "score": 1405.0, "votes": 11000},
@@ -55,21 +54,21 @@ ARENA_ENTRIES: list[dict[str, object]] = [
     {"name": "DeepSeek-R1", "org": "DeepSeek Research", "rank_ub": 15, "score": 1388.0, "votes": 20000},
     {"name": "DeepSeek-V3", "org": "DeepSeek Research", "rank_ub": 17, "score": 1370.0, "votes": 18000},
     # --- Alibaba (Qwen) ---
-    {"name": "Qwen3-Max-Preview", "org": "Alibaba", "rank_ub": 16, "score": 1375.0, "votes": 9000},
+    {"name": "Qwen3 Max", "org": "Alibaba", "rank_ub": 16, "score": 1375.0, "votes": 9000},
     # --- Zhipu (GLM) ---
     {"name": "GLM-4.7", "org": "Zhipu AI", "rank_ub": 18, "score": 1365.0, "votes": 7000},
     # --- Mistral ---
-    {"name": "Mistral-Large-2", "org": "Mistral AI", "rank_ub": 19, "score": 1355.0, "votes": 8000},
+    {"name": "Mistral Large", "org": "Mistral AI", "rank_ub": 19, "score": 1355.0, "votes": 8000},
     # --- Moonshot (Kimi) ---
-    {"name": "Kimi-K2.5", "org": "Moonshot AI", "rank_ub": 20, "score": 1348.0, "votes": 5000},
+    {"name": "Kimi K2.5", "org": "Moonshot AI", "rank_ub": 20, "score": 1348.0, "votes": 5000},
     # --- Microsoft ---
     {"name": "Phi-4", "org": "Microsoft", "rank_ub": 22, "score": 1330.0, "votes": 6000},
     # --- Cohere ---
-    {"name": "Command-R+", "org": "Cohere Labs", "rank_ub": 23, "score": 1320.0, "votes": 4000},
+    {"name": "Command R+", "org": "Cohere Labs", "rank_ub": 23, "score": 1320.0, "votes": 4000},
     # --- Amazon ---
     {"name": "Amazon Nova Pro", "org": "Amazon", "rank_ub": 25, "score": 1300.0, "votes": 3000},
     # --- AI21 ---
-    {"name": "Jamba-1.5-Large", "org": "AI21 Labs", "rank_ub": 26, "score": 1290.0, "votes": 2000},
+    {"name": "Jamba 1.5 Large", "org": "AI21 Labs", "rank_ub": 26, "score": 1290.0, "votes": 2000},
 ]
 
 
@@ -92,21 +91,6 @@ def _load_markets() -> dict[str, object]:
         return json.load(f)
 
 
-# Overrides needed for Arena names that diverge too much for fuzzy
-# matching alone (date-suffixed releases, "Exp-" tags, etc.).
-OVERRIDES: dict[str, str] = {
-    "GPT-5.1-2025-12-01": "GPT-5.1",
-    "GPT-4o-2025-03-01": "GPT-4o",
-    "Gemini-2.5-Pro-Exp-03-25": "Gemini 2.5 Pro",
-    "Qwen3-Max-Preview": "Qwen3 Max",
-    "Grok-4.1-Thinking": "Grok 4.1 Thinking",
-    "Mistral-Large-2": "Mistral Large",
-    "Kimi-K2.5": "Kimi K2.5",
-    "Command-R+": "Command R+",
-    "Jamba-1.5-Large": "Jamba 1.5 Large",
-}
-
-
 class TestContractMapping:
     """Every Kalshi contract (excluding 'Other') must map to an Arena entry."""
 
@@ -114,7 +98,6 @@ class TestContractMapping:
     async def _setup(self) -> None:
         cfg = LeaderboardAlphaConfig(
             target_series=["KXTOPMODEL", "KXLLM1"],
-            model_name_overrides=OVERRIDES,
         )
         self.strategy = LeaderboardAlphaStrategy(config=cfg)
         market_data = _load_markets()

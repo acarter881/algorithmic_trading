@@ -24,7 +24,6 @@ class TestExactMatch:
         assert result is not None
         assert result.matched == "claude-opus-4-6"
         assert result.score == 1.0
-        assert not result.is_override
 
     def test_case_insensitive_exact(self) -> None:
         candidates = ["claude-opus-4-6", "gemini-3-pro"]
@@ -32,28 +31,6 @@ class TestExactMatch:
         assert result is not None
         assert result.matched == "claude-opus-4-6"
         assert result.score == 1.0
-
-
-class TestOverrides:
-    def test_override_match(self) -> None:
-        candidates = ["gemini-3.1-pro", "gemini-3-pro"]
-        overrides = {"gemini-3.1-pro-preview": "gemini-3.1-pro"}
-        result = fuzzy_match("gemini-3.1-pro-preview", candidates, overrides=overrides)
-        assert result is not None
-        assert result.matched == "gemini-3.1-pro"
-        assert result.is_override
-
-    def test_override_target_not_in_candidates(self) -> None:
-        candidates = ["gemini-3-pro"]
-        # Override target not found in candidates, falls back to fuzzy
-        result = fuzzy_match(
-            "gemini-3.1-pro-preview",
-            candidates,
-            threshold=0.5,
-            overrides={"gemini-3.1-pro-preview": "nonexistent-model"},
-        )
-        assert result is not None
-        assert not result.is_override
 
 
 class TestFuzzyMatch:
@@ -85,10 +62,9 @@ class TestKnownMismatches:
         assert result is not None
         assert result.matched == "claude-opus-4-6-thinking"
 
-    def test_preview_suffix(self) -> None:
+    def test_preview_suffix_fuzzy(self) -> None:
         candidates = ["gemini-3.1-pro"]
-        overrides = {"gemini-3.1-pro-preview": "gemini-3.1-pro"}
-        result = fuzzy_match("gemini-3.1-pro-preview", candidates, overrides=overrides)
+        result = fuzzy_match("gemini-3.1-pro-preview", candidates, threshold=0.7)
         assert result is not None
         assert result.matched == "gemini-3.1-pro"
 

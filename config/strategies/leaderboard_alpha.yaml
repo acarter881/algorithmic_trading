@@ -12,5 +12,4 @@ leaderboard_alpha:
   target_series:
     - KXTOPMODEL
     - KXLLM1
-  model_name_overrides:
-    "gemini-3.1-pro-preview": "gemini-3.1-pro"
+  mapping_validation_top_n: 20

@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir .
 RUN mkdir -p /data /logs
 
 # Default environment: paper trading
-ENV AUTOTRADER__KALSHI__ENVIRONMENT=demo \
+ENV AUTOTRADER__KALSHI__ENVIRONMENT=production \
     AUTOTRADER__DATABASE__URL=sqlite:////data/autotrader_paper.db \
     AUTOTRADER__LOGGING__LOG_DIR=/logs
 
