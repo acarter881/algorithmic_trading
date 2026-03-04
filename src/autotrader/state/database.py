@@ -18,6 +18,12 @@ def create_db_engine(url: str = "sqlite:///autotrader.db", echo: bool = False) -
     return create_engine(url, echo=echo)
 
 
+def _quote_identifier(name: str) -> str:
+    """Quote a SQL identifier to prevent injection and handle reserved words."""
+    # Double any embedded quotes (standard SQL escaping for quoted identifiers)
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _migrate_missing_columns(engine: Engine) -> None:
     """Add any columns present in ORM models but missing from the database.
 
@@ -26,7 +32,17 @@ def _migrate_missing_columns(engine: Engine) -> None:
     adds columns that the ORM defines but that are absent from the
     actual schema.  Only supports simple ``ALTER TABLE ADD COLUMN``
     (sufficient for SQLite).
+
+    Migration failures are logged but never propagated — a failed
+    migration must not prevent the application from starting.
     """
+    try:
+        _migrate_missing_columns_inner(engine)
+    except Exception:
+        logger.exception("schema_migration_failed")
+
+
+def _migrate_missing_columns_inner(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
 
@@ -50,7 +66,9 @@ def _migrate_missing_columns(engine: Engine) -> None:
                 # SQLite requires a default for NOT NULL on existing rows
                 default = " DEFAULT ''"
 
-            ddl = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type} {nullable}{default}"
+            quoted_table = _quote_identifier(table_name)
+            quoted_col = _quote_identifier(column.name)
+            ddl = f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_col} {col_type} {nullable}{default}"
             logger.info("migrating missing column: %s.%s", table_name, column.name)
             with engine.begin() as conn:
                 conn.execute(text(ddl))
