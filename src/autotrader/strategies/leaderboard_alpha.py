@@ -294,6 +294,9 @@ class LeaderboardAlphaStrategy(Strategy):
     def validate_mappings(self) -> dict[str, Any]:
         """Validate that top-N Arena models/orgs map to Kalshi contracts.
 
+        Attempts resolution for every top-N entry (not just those already
+        cached by ``seed_rankings``, which only covers the top 10).
+
         Returns a report dict with:
         - ``mapped_models``: list of ``{model, ticker, series}`` dicts
         - ``unmapped_models``: list of ``{model, rank_ub, series, reason}`` dicts
@@ -317,7 +320,8 @@ class LeaderboardAlphaStrategy(Strategy):
 
         for entry in ranked:
             # --- KXTOPMODEL: model → contract ---
-            ticker = self._model_ticker_map.get(entry.model_name)
+            # Attempt resolution (returns cached result if already resolved)
+            ticker = self._resolve_ticker(entry.model_name, series="KXTOPMODEL")
             if ticker:
                 mapped_models.append({"model": entry.model_name, "ticker": ticker, "series": "KXTOPMODEL"})
             else:
@@ -335,7 +339,7 @@ class LeaderboardAlphaStrategy(Strategy):
             if not org or org in seen_orgs:
                 continue
             seen_orgs.add(org)
-            org_ticker = self._org_ticker_map.get(org)
+            org_ticker = self._resolve_ticker(org, series="KXLLM1")
             if org_ticker:
                 mapped_orgs.append({"org": org, "ticker": org_ticker, "series": "KXLLM1"})
             else:

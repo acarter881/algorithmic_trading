@@ -3,7 +3,6 @@
 # Secrets go in .env (gitignored).
 
 kalshi:
-  environment: production
   execution_mode: paper
   request_timeout_seconds: 30.0
   max_retries: 3

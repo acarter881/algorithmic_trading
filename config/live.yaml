@@ -1,8 +1,7 @@
-# Production environment overrides.
+# Live trading overrides.
 # Keep this file explicit and conservative for real-money trading.
 
 kalshi:
-  environment: production
   execution_mode: live
 
 database:

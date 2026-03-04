@@ -8,15 +8,8 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 
-class Environment(StrEnum):
-    """Kalshi API environment — controls which API endpoint is used."""
-
-    DEMO = "demo"
-    PRODUCTION = "production"
-
-
 class ExecutionMode(StrEnum):
-    """Order execution mode — independent of API environment.
+    """Order execution mode.
 
     ``paper``  simulates instant fills locally (no orders sent to exchange).
     ``live``   submits real orders to Kalshi.
@@ -29,23 +22,15 @@ class ExecutionMode(StrEnum):
 class KalshiConfig(BaseModel):
     """Kalshi API connection settings."""
 
-    environment: Environment = Environment.PRODUCTION
     execution_mode: ExecutionMode = ExecutionMode.PAPER
     api_key_id: str = ""
     private_key_path: str = ""
-    demo_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
-    production_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     websocket_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     websocket_enabled: bool = False
     request_timeout_seconds: float = 30.0
     max_retries: int = 3
     rate_limit_buffer_pct: float = 0.1
-
-    @property
-    def base_url(self) -> str:
-        if self.environment == Environment.DEMO:
-            return self.demo_base_url
-        return self.production_base_url
 
 
 class ArenaMonitorConfig(BaseModel):

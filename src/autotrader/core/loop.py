@@ -834,11 +834,9 @@ class TradingLoop:
                     "websocket_private_key_read_failed",
                     path=self._config.kalshi.private_key_path,
                 )
-        is_demo = self._config.kalshi.environment.value != "production"
         self._ws_client = KalshiWebSocketClient(
             api_key_id=self._config.kalshi.api_key_id,
             private_key_pem=private_key_pem,
-            is_demo=is_demo,
             ws_url=self._config.kalshi.websocket_url,
         )
 

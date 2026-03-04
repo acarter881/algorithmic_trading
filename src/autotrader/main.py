@@ -18,12 +18,12 @@ def cli() -> None:
 @cli.command()
 @click.option("--config-dir", default="config", help="Path to configuration directory.")
 @click.option(
-    "--environment",
-    type=click.Choice(["demo", "production"]),
+    "--execution-mode",
+    type=click.Choice(["paper", "live"]),
     default=None,
-    help="Override environment (default: from config).",
+    help="Override execution mode (default: from config).",
 )
-def run(config_dir: str, environment: str | None) -> None:
+def run(config_dir: str, execution_mode: str | None) -> None:
     """Start the autotrader."""
     import asyncio
     import signal as signal_mod
@@ -33,7 +33,7 @@ def run(config_dir: str, environment: str | None) -> None:
     from autotrader.monitoring.logging import setup_logging
     from autotrader.state.database import create_db_engine, get_session_factory, init_db
 
-    config = load_config(config_dir=config_dir, environment=environment)
+    config = load_config(config_dir=config_dir, execution_mode=execution_mode)
     setup_logging(
         level=config.logging.level,
         json_output=config.logging.json_output,
@@ -43,18 +43,16 @@ def run(config_dir: str, environment: str | None) -> None:
     from autotrader.monitoring.logging import get_logger
 
     log = get_logger("autotrader.main")
-    effective_environment = config.kalshi.environment.value
     effective_execution_mode = config.kalshi.execution_mode.value
     effective_base_url = config.kalshi.base_url
 
     log.info(
         "autotrader_starting",
         version=__version__,
-        environment=effective_environment,
+        execution_mode=effective_execution_mode,
     )
     log.info(
         "runtime_mode_resolved",
-        environment=effective_environment,
         execution_mode=effective_execution_mode,
         api_base_url=effective_base_url,
     )
@@ -73,7 +71,6 @@ def run(config_dir: str, environment: str | None) -> None:
         click.echo(f"Metrics server: http://0.0.0.0:{config.metrics.port}/metrics")
 
     click.echo(f"Kalshi Autotrader v{__version__}")
-    click.echo(f"Environment: {effective_environment}")
     click.echo(f"Execution mode: {effective_execution_mode}")
     click.echo(f"Kalshi API base URL: {effective_base_url}")
     click.echo(f"Database: {config.database.url}")
@@ -106,7 +103,7 @@ def validate_config(config_dir: str) -> None:
     try:
         config = load_config(config_dir=config_dir)
         click.echo("Configuration is valid.")
-        click.echo(f"  Environment: {config.kalshi.environment.value}")
+        click.echo(f"  Execution mode: {config.kalshi.execution_mode.value}")
         click.echo(f"  Database: {config.database.url}")
         click.echo(f"  Arena poll interval: {config.arena_monitor.poll_interval_seconds}s")
         click.echo(f"  Risk max portfolio exposure: {config.risk.global_config.max_portfolio_exposure_pct:.0%}")
@@ -224,12 +221,12 @@ def pnl(config_dir: str, days: int, strategy: str | None, as_csv: bool) -> None:
 @cli.command()
 @click.option("--config-dir", default="config", help="Path to configuration directory.")
 @click.option(
-    "--environment",
-    type=click.Choice(["demo", "production"]),
+    "--execution-mode",
+    type=click.Choice(["paper", "live"]),
     default=None,
-    help="Override environment.",
+    help="Override execution mode.",
 )
-def preflight(config_dir: str, environment: str | None) -> None:
+def preflight(config_dir: str, execution_mode: str | None) -> None:
     """Run connectivity checks without starting the trading loop."""
     import os
 
@@ -259,8 +256,8 @@ def preflight(config_dir: str, environment: str | None) -> None:
 
     # 1. Configuration
     try:
-        config = load_config(config_dir=config_dir, environment=environment)
-        _pass("Configuration", f"environment={config.kalshi.environment.value}")
+        config = load_config(config_dir=config_dir, execution_mode=execution_mode)
+        _pass("Configuration", f"execution_mode={config.kalshi.execution_mode.value}")
     except Exception as e:
         _fail("Configuration", str(e))
         click.echo(f"\n{checks_passed} passed, {checks_failed} failed")

@@ -5,12 +5,13 @@ from __future__ import annotations
 import contextlib
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from kalshi_python import ApiException, Configuration, KalshiClient  # type: ignore[attr-defined]
 
-from autotrader.config.models import Environment, KalshiConfig
+if TYPE_CHECKING:
+    from autotrader.config.models import KalshiConfig
 
 logger = structlog.get_logger("autotrader.api.client")
 
@@ -138,7 +139,6 @@ class KalshiAPIClient:
     Provides:
     - Automatic retry with exponential backoff on transient errors
     - Rate limit awareness (backs off on 429)
-    - Environment toggle (demo/production)
     - Structured logging of all API interactions
     - Typed return values for market data and trading operations
     """
@@ -181,7 +181,6 @@ class KalshiAPIClient:
         self._client = KalshiClient(configuration=sdk_config)  # type: ignore[no-untyped-call]
         logger.info(
             "kalshi_client_connected",
-            environment=self._config.environment.value,
             base_url=self._config.base_url,
             authenticated=bool(pem and self._config.api_key_id),
         )
@@ -192,10 +191,6 @@ class KalshiAPIClient:
         if self._client is None:
             raise KalshiAPIError("Client not connected. Call connect() first.")
         return self._client
-
-    @property
-    def is_demo(self) -> bool:
-        return self._config.environment == Environment.DEMO
 
     # ── Retry Logic ──────────────────────────────────────────────────────
 

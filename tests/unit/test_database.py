@@ -177,7 +177,7 @@ class TestSystemEvent:
     def test_create_system_event(self, db_session: Session) -> None:
         event = SystemEvent(
             event_type="startup",
-            details={"version": "0.1.0", "environment": "demo"},
+            details={"version": "0.1.0", "execution_mode": "paper"},
             severity="info",
         )
         db_session.add(event)
