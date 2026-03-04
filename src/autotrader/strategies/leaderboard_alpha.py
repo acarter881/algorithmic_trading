@@ -10,6 +10,7 @@ combined with quantitative fair-value estimation and fee-aware filtering.
 from __future__ import annotations
 
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,46 @@ if TYPE_CHECKING:
     from autotrader.signals.base import Signal
 
 logger = structlog.get_logger("autotrader.strategies.leaderboard_alpha")
+
+# Regex patterns for extracting model/org names from Kalshi contract titles.
+# Titles follow patterns like "Claude Opus 4.6 will be the #1 AI model"
+# or "Anthropic will have the #1 AI model".
+_TITLE_SUFFIX_RE = re.compile(
+    r"\s+will (?:be|have) the #1 AI model$",
+    re.IGNORECASE,
+)
+
+# "Model:: Org" format used by some Kalshi subtitles (e.g. "Claude:: Anthropic").
+# We extract just the first part (the model or org display name).
+_SUBTITLE_DOUBLE_COLON_RE = re.compile(r"^(.+?)::\s*(.+)$")
+
+
+def _extract_contract_name(subtitle: str, title: str) -> str:
+    """Extract a clean model/org display name from Kalshi contract fields.
+
+    Handles:
+    - Normal subtitles (``"Claude Opus 4.6"``) — returned as-is.
+    - ``"Model:: Org"`` subtitles — extracts the first component.
+    - Empty subtitles — falls back to title with boilerplate stripped.
+    """
+    raw = (subtitle or "").strip()
+
+    # Handle "Model:: Org" format — take the first part
+    if raw:
+        m = _SUBTITLE_DOUBLE_COLON_RE.match(raw)
+        if m:
+            return m.group(1).strip()
+        return raw
+
+    # Subtitle is empty — fall back to title, stripping boilerplate suffix.
+    raw_title = (title or "").strip()
+    if raw_title:
+        cleaned = _TITLE_SUFFIX_RE.sub("", raw_title).strip()
+        if cleaned:
+            return cleaned
+        return raw_title
+
+    return ""
 
 
 @dataclass
@@ -124,7 +165,10 @@ class LeaderboardAlphaStrategy(Strategy):
         if isinstance(market_data, dict):
             for m in market_data.get("markets", []):
                 ticker = m.get("ticker", "")
-                model_name = m.get("subtitle", m.get("title", ""))
+                model_name = _extract_contract_name(
+                    subtitle=m.get("subtitle", ""),
+                    title=m.get("title", ""),
+                )
                 self._ticker_model_names[ticker] = model_name
                 raw_event_ticker = m.get("event_ticker")
                 event_ticker = (
@@ -141,6 +185,11 @@ class LeaderboardAlphaStrategy(Strategy):
                     yes_ask=m.get("yes_ask", 0),
                     last_price=m.get("last_price", 0),
                 )
+            logger.info(
+                "contract_names_resolved",
+                count=len(self._ticker_model_names),
+                names={t: n for t, n in list(self._ticker_model_names.items())[:10]},
+            )
 
         if isinstance(state, dict):
             for ticker, pos in state.get("positions", {}).items():

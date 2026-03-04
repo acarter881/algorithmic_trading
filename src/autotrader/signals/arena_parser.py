@@ -549,6 +549,46 @@ def _clean_cell(cell: Tag) -> str:
     return text
 
 
+def _collect_cell_segments(tag: Tag) -> tuple[str, list[str]]:
+    """Recursively collect ``(img_alt, text_segments)`` from a model cell.
+
+    Handles both flat structures (``<img/><span>model</span><span>org</span>``)
+    and wrapped structures where an extra ``<div>`` or ``<a>`` wraps the content.
+    Only leaf-level tags (those with no child tags) contribute text segments,
+    preventing wrapper elements from concatenating all inner text.
+    """
+    img_alt = ""
+    segments: list[str] = []
+
+    for child in tag.children:
+        if isinstance(child, Tag):
+            if child.name == "img":
+                alt = child.get("alt", "") or ""
+                if isinstance(alt, list):
+                    alt = " ".join(alt)
+                alt = alt.strip()
+                if alt:
+                    img_alt = alt
+            elif child.find(True):
+                # Has child tags — it's a wrapper; recurse into it.
+                sub_alt, sub_segments = _collect_cell_segments(child)
+                if sub_alt and not img_alt:
+                    img_alt = sub_alt
+                segments.extend(sub_segments)
+            else:
+                # Leaf tag — extract text directly.
+                text = child.get_text(strip=True)
+                if text:
+                    segments.append(text)
+        else:
+            # NavigableString
+            text = str(child).strip()
+            if text:
+                segments.append(text)
+
+    return img_alt, segments
+
+
 def _extract_model_cell(cell: Tag) -> tuple[str, str]:
     """Extract (model_name, organization) from a Model column cell.
 
@@ -556,33 +596,12 @@ def _extract_model_cell(cell: Tag) -> tuple[str, str]:
     icon + model name + org label (e.g. "Anthropic · Proprietary").
 
     Strategy:
-    1. Look for sub-elements and use separator-based heuristics.
+    1. Recursively collect leaf-level text segments (handles nested wrappers).
     2. Treat image alt text as potential org name.
     3. Treat text after a "·" separator as org metadata.
     4. If the cell is plain text, return it as-is with no org.
     """
-    # Collect direct text segments from child elements (not recursively
-    # concatenated), so we can distinguish model name from org label.
-    children = list(cell.children)
-    text_segments: list[str] = []
-    img_alt = ""
-
-    for child in children:
-        if isinstance(child, Tag):
-            if child.name == "img":
-                img_alt = child.get("alt", "") or ""  # type: ignore[assignment]
-                if isinstance(img_alt, list):
-                    img_alt = " ".join(img_alt)
-                img_alt = img_alt.strip()
-            else:
-                segment = child.get_text(strip=True)
-                if segment:
-                    text_segments.append(segment)
-        else:
-            # NavigableString
-            segment = str(child).strip()
-            if segment:
-                text_segments.append(segment)
+    img_alt, text_segments = _collect_cell_segments(cell)
 
     # If the cell has no sub-elements, fall back to plain text extraction
     if not text_segments:

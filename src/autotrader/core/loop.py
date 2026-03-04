@@ -259,6 +259,7 @@ class TradingLoop:
                 "market_data_bootstrapped",
                 series=self._config.leaderboard_alpha.target_series,
                 markets=len(markets),
+                sample=[{"ticker": m.ticker, "subtitle": m.subtitle, "title": m.title} for m in markets[:5]],
             )
         except Exception:
             logger.exception(
