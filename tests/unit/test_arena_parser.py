@@ -281,6 +281,58 @@ class TestParseHtmlTable:
         assert entries[1].release_date == "2024-03"
 
 
+class TestParseHtmlTableNestedLayout:
+    """Tests for the arena.ai layout where Model cells contain nested elements."""
+
+    @pytest.fixture
+    def nested_html(self) -> str:
+        return (FIXTURES / "arena_leaderboard_nested.html").read_text()
+
+    def test_model_name_extracted_from_nested_cell(self, nested_html: str) -> None:
+        entries = parse_html_table(nested_html)
+        assert len(entries) == 5
+        assert entries[0].model_name == "claude-opus-4-6"
+        assert entries[1].model_name == "GPT-5"
+        assert entries[2].model_name == "Gemini 3.0 Ultra"
+
+    def test_org_extracted_from_model_cell(self, nested_html: str) -> None:
+        """When no separate Organization column, org comes from the Model cell."""
+        entries = parse_html_table(nested_html)
+        assert entries[0].organization == "Anthropic"
+        assert entries[1].organization == "OpenAI"
+        assert entries[2].organization == "Google"
+
+    def test_rank_spread_column_parsed(self, nested_html: str) -> None:
+        """Rank Spread column with ↔ separator should populate rank_ub/rank_lb."""
+        entries = parse_html_table(nested_html)
+        # "1 ↔ 3" → rank_ub=3, rank_lb=1
+        assert entries[0].rank_ub == 3
+        assert entries[0].rank_lb == 1
+        # "4 ↔ 4"
+        assert entries[1].rank_ub == 4
+        assert entries[1].rank_lb == 4
+        # "5 ↔ 10"
+        assert entries[2].rank_ub == 10
+        assert entries[2].rank_lb == 5
+
+    def test_display_rank_still_parsed(self, nested_html: str) -> None:
+        entries = parse_html_table(nested_html)
+        assert entries[0].rank == 1
+        assert entries[1].rank == 2
+        assert entries[2].rank == 3
+
+    def test_score_and_votes_parsed(self, nested_html: str) -> None:
+        entries = parse_html_table(nested_html)
+        assert entries[0].score == 1350.0
+        assert entries[0].votes == 25000
+
+    def test_preliminary_detection_nested(self, nested_html: str) -> None:
+        entries = parse_html_table(nested_html)
+        preview = next(e for e in entries if e.model_name == "NewModel-Preview")
+        assert preview.is_preliminary is True
+        assert entries[0].is_preliminary is False
+
+
 # ── Unified parse_leaderboard ─────────────────────────────────────────
 
 
@@ -331,6 +383,12 @@ class TestParseRankRange:
 
     def test_range_with_spaces(self) -> None:
         assert _parse_rank_range("1 - 5") == (5, 1)
+
+    def test_range_double_arrow(self) -> None:
+        assert _parse_rank_range("1 ↔ 3") == (3, 1)
+
+    def test_range_double_arrow_no_spaces(self) -> None:
+        assert _parse_rank_range("5↔10") == (10, 5)
 
     def test_empty(self) -> None:
         assert _parse_rank_range("") == (0, 0)
