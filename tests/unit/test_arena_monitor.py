@@ -583,7 +583,15 @@ class TestSnapshotSerialization:
         monitor = ArenaMonitor()
         snap = _snapshot(
             [
-                _entry("Claude", org="Anthropic", rank=1, rank_ub=1, score=1350, votes=25000),
+                _entry(
+                    "Claude",
+                    org="Anthropic",
+                    rank=1,
+                    rank_ub=1,
+                    score=1350,
+                    votes=25000,
+                    release_date="2024-03-01",
+                ),
             ]
         )
         data = monitor.snapshot_to_dict(snap)
@@ -597,6 +605,16 @@ class TestSnapshotSerialization:
         assert entry["score"] == 1350.0
         assert entry["votes"] == 25000
         assert entry["is_preliminary"] is False
+        assert entry["release_date"] == "2024-03-01"
+
+    def test_snapshot_to_dict_release_date_round_trip(self) -> None:
+        monitor = ArenaMonitor()
+        snap = _snapshot([_entry("GPT-5", release_date="2025-01-15")])
+        serialized = monitor.snapshot_to_dict(snap)
+
+        snapshot_data = json.loads(json.dumps(serialized))
+
+        assert snapshot_data["entries"][0]["release_date"] == "2025-01-15"
 
     def test_snapshot_to_dict_empty(self) -> None:
         monitor = ArenaMonitor()
