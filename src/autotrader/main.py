@@ -7,6 +7,7 @@ from typing import Any
 import click
 
 from autotrader import __version__
+from autotrader.preflight.markets import validate_target_series_markets
 
 
 def _collect_series_market_counts(client: Any, target_series: list[str]) -> dict[str, int]:
@@ -243,6 +244,7 @@ def preflight(config_dir: str, execution_mode: str | None) -> None:
 
     checks_passed = 0
     checks_failed = 0
+    client: Any | None = None
 
     def _pass(name: str, detail: str = "") -> None:
         nonlocal checks_passed
@@ -328,6 +330,23 @@ def preflight(config_dir: str, execution_mode: str | None) -> None:
         _pass("Arena monitor", f"status={resp.status_code}")
     except Exception as e:
         _fail("Arena monitor", str(e))
+
+    # 5. Target series market availability
+    try:
+        if client is None:
+            _fail("Target series markets", "skipped because Kalshi API check failed")
+        else:
+            series_market_counts, missing_series = validate_target_series_markets(
+                client,
+                config.leaderboard_alpha.target_series,
+            )
+            detail = ", ".join(f"{series}={count}" for series, count in series_market_counts.items())
+            if missing_series:
+                _fail("Target series markets", f"missing={missing_series}; counts=({detail})")
+            else:
+                _pass("Target series markets", detail)
+    except Exception as e:
+        _fail("Target series markets", str(e))
 
     # 6. Discord webhook (if configured)
     if config.discord.enabled and config.discord.webhook_url:
