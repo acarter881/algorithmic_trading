@@ -86,11 +86,21 @@ class LeaderboardAlphaConfig(BaseModel):
     max_position_per_event: float = 250.00
     preliminary_model_discount: float = Field(default=0.3, ge=0.0, le=1.0)
     fuzzy_match_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    preferred_event_tickers: list[str] = Field(default_factory=list)
+    mapping_event_selection: str = "nearest_expiration"
     mapping_validation_top_n: int = Field(default=20, ge=1)
     target_series: list[str] = Field(default_factory=lambda: ["KXTOPMODEL", "KXLLM1"])
     mispricing_detection_enabled: bool = True
     mispricing_min_edge_cents: int = 5
     mispricing_cooldown_seconds: int = 300
+
+    @field_validator("mapping_event_selection")
+    @classmethod
+    def validate_mapping_event_selection(cls, v: str) -> str:
+        valid = {"nearest_expiration", "any"}
+        if v not in valid:
+            raise ValueError(f"Invalid mapping_event_selection: {v}. Must be one of {valid}")
+        return v
 
 
 class DiscordConfig(BaseModel):
