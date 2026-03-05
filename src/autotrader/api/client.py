@@ -307,14 +307,27 @@ class KalshiAPIClient:
         market = data.get("market", data)
         return self._parse_market(market)
 
+    def _raw_get(self, url: str) -> dict[str, Any]:
+        """HTTP GET that preserves all JSON fields and raises on non-2xx.
+
+        ``KalshiClient.call_api`` returns a ``RESTResponse`` without
+        raising for error statuses, so we must check ourselves and raise
+        ``ApiException`` so that ``_call_with_retry`` can handle
+        retries / back-off for 429/5xx responses.
+        """
+        response: Any = self.client.call_api("GET", url)
+        response.read()
+        status: int = response.status
+        if status < 200 or status >= 300:
+            raise ApiException(status=status, reason=response.reason)
+        raw: bytes = response.data  # type: ignore[assignment]
+        return json.loads(raw)  # type: ignore[no-any-return]
+
     def _get_market_raw(self, ticker: str) -> dict[str, Any]:
         """Fetch ``/markets/{ticker}`` via raw HTTP, preserving all API fields."""
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/markets/{ticker}"
-        response: Any = self.client.call_api("GET", url)
-        response.read()
-        raw: bytes = response.data  # type: ignore[assignment]
-        return json.loads(raw)  # type: ignore[no-any-return]
+        return self._raw_get(url)
 
     def get_markets(
         self,
@@ -372,11 +385,7 @@ class KalshiAPIClient:
 
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/markets?{urlencode(params)}"
-
-        response: Any = self.client.call_api("GET", url)
-        response.read()
-        raw: bytes = response.data  # type: ignore[assignment]
-        return json.loads(raw)  # type: ignore[no-any-return]
+        return self._raw_get(url)
 
     def get_orderbook(self, ticker: str, depth: int | None = None) -> Orderbook:
         """Get the orderbook for a market."""

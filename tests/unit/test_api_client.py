@@ -22,10 +22,12 @@ from autotrader.api.client import (
 from autotrader.config.models import KalshiConfig
 
 
-def _mock_raw_response(data: dict) -> MagicMock:
+def _mock_raw_response(data: dict, status: int = 200) -> MagicMock:
     """Create a mock RESTResponse that returns JSON data."""
     resp = MagicMock()
     resp.data = json.dumps(data).encode()
+    resp.status = status
+    resp.reason = "OK" if status == 200 else "Error"
     return resp
 
 
@@ -207,6 +209,28 @@ class TestMarketData:
         assert markets[0].ticker == "T1"
         assert markets[0].subtitle == "Model Alpha"
         assert cursor == "next-page-token"
+
+    def test_get_markets_raw_retries_on_429(self, client: KalshiAPIClient) -> None:
+        """Non-2xx from raw HTTP call should raise ApiException for retry."""
+        error_resp = _mock_raw_response({"error": "rate limited"}, status=429)
+        ok_resp = _mock_raw_response({"markets": [{"ticker": "T1", "subtitle": "M1"}], "cursor": None})
+        client.client.call_api.side_effect = [error_resp, ok_resp]
+
+        with patch("time.sleep"):
+            markets, cursor = client.get_markets(series_ticker="KXTOPMODEL")
+
+        assert len(markets) == 1
+        assert client.client.call_api.call_count == 2
+
+    def test_get_market_raw_raises_on_401(self, client: KalshiAPIClient) -> None:
+        """401 from raw HTTP should propagate as KalshiAPIError (no retry)."""
+        error_resp = _mock_raw_response({"error": "unauthorized"}, status=401)
+        client.client.call_api.return_value = error_resp
+
+        with pytest.raises(KalshiAPIError) as exc_info:
+            client.get_market("KXTOPMODEL-26MAR-CLAUDE")
+
+        assert exc_info.value.status_code == 401
 
     def test_get_orderbook(self, client: KalshiAPIClient) -> None:
         client.client.get_market_orderbook.return_value = MagicMock(
