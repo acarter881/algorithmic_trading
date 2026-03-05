@@ -253,21 +253,28 @@ class RiskManager:
             return RiskCheckResult(check_name="position_per_event", verdict=RiskVerdict.APPROVED)
 
         max_event_pos = strategy_config.max_position_per_event
+        event_exposure_mode = strategy_config.event_exposure_mode
         event_ticker = self._event_ticker_for(order.ticker)
-        current_event_pos = self._current_position_for_event(event_ticker)
         signed_delta = self._signed_position_delta(order)
 
-        new_event_pos = current_event_pos + signed_delta
-        if abs(new_event_pos) > max_event_pos:
-            return RiskCheckResult(
-                check_name="position_per_event",
-                verdict=RiskVerdict.REJECTED,
-                reason=(
-                    f"Would exceed per-event limit: "
-                    f"event={event_ticker}, current={current_event_pos}, "
-                    f"delta={signed_delta}, projected={new_event_pos}, max={max_event_pos:.0f}"
-                ),
+        if event_exposure_mode == "gross":
+            current_event_pos = self._current_gross_position_for_event(event_ticker)
+            current_ticker_gross = self._current_gross_position_for_ticker_in_event(order.ticker, event_ticker)
+            projected_ticker_net = self._current_position_for_ticker(order.ticker) + signed_delta
+            projected_event_pos = current_event_pos - current_ticker_gross + abs(projected_ticker_net)
+            exceeded = projected_event_pos > max_event_pos
+        else:
+            current_event_pos = self._current_position_for_event(event_ticker)
+            projected_event_pos = current_event_pos + signed_delta
+            exceeded = abs(projected_event_pos) > max_event_pos
+
+        if exceeded:
+            reason = (
+                f"Would exceed per-event limit ({event_exposure_mode}): "
+                f"event={event_ticker}, current={current_event_pos}, "
+                f"delta={signed_delta}, projected_gross={projected_event_pos}, max={max_event_pos:.0f}"
             )
+            return RiskCheckResult(check_name="position_per_event", verdict=RiskVerdict.REJECTED, reason=reason)
         return RiskCheckResult(check_name="position_per_event", verdict=RiskVerdict.APPROVED)
 
     def _check_daily_loss(self, order: ProposedOrder) -> RiskCheckResult:
@@ -355,6 +362,18 @@ class RiskManager:
     def _current_position_for_event(self, event_ticker: str) -> int:
         """Sum of all position quantities across an event."""
         return sum(p.quantity for p in self._portfolio.positions if p.event_ticker == event_ticker)
+
+    def _current_gross_position_for_event(self, event_ticker: str) -> int:
+        """Sum of absolute position quantities across an event."""
+        return sum(abs(p.quantity) for p in self._portfolio.positions if p.event_ticker == event_ticker)
+
+    def _current_gross_position_for_ticker_in_event(self, ticker: str, event_ticker: str) -> int:
+        """Sum of absolute position quantities for a ticker within an event."""
+        return sum(
+            abs(p.quantity)
+            for p in self._portfolio.positions
+            if p.ticker == ticker and p.event_ticker == event_ticker
+        )
 
     def _total_exposure_cents(self) -> int:
         """Total gross economic exposure across contracts.
