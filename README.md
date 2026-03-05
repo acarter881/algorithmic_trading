@@ -38,6 +38,7 @@ Winner selection is implemented in `src/autotrader/signals/settlement.py::resolv
 Notes:
 - Invalid/non-positive `rank_ub` values are treated as very large (sorted to the bottom).
 - Missing `release_date` values are treated as very late dates (sorted to the bottom within ties).
+- Persisted `leaderboard_snapshots.snapshot_data.entries` include tie-break/audit fields (`votes`, `release_date`) for settlement replay and verification.
 
 This exact winner logic directly affects:
 - `new_leader` generation in `src/autotrader/signals/arena_monitor.py` (leader-change detection uses `resolve_top_model` on previous vs current snapshots).
