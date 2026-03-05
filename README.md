@@ -79,7 +79,7 @@ docker compose up -d --build
 
 ### Development Loop (Docker-only)
 
-To iterate faster (lint/fix, preflight, and fast tests) use:
+To iterate faster (lint, preflight, and fast tests) use:
 
 ```bash
 ./scripts/docker_dev_loop.sh --iterations 3
@@ -87,7 +87,7 @@ To iterate faster (lint/fix, preflight, and fast tests) use:
 
 Defaults:
 - runs Docker image build once
-- runs `ruff format` + `ruff check --fix`
+- runs `ruff format --check` + `ruff check`
 - runs `preflight` (including a target-series market-availability check)
 - runs fast tests (`pytest -m "not integration"`)
 - writes logs to `reports/docker-dev-loop-<timestamp>.log`

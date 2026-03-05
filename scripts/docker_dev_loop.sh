@@ -31,9 +31,16 @@ if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
   exit 2
 fi
 
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is required but not found in PATH" >&2
+  exit 2
+fi
+
 mkdir -p reports
 STAMP="$(date +%Y%m%d-%H%M%S)"
 REPORT="reports/docker-dev-loop-${STAMP}.log"
+
+HOST_WORKDIR="${PWD}"
 
 echo "Docker dev loop: iterations=${ITERATIONS}, full_tests=${FULL_TESTS}, config_dir=${CONFIG_DIR}" | tee "$REPORT"
 
@@ -43,24 +50,28 @@ for ((i = 1; i <= ITERATIONS; i++)); do
   {
     echo
     echo "=== ITERATION ${i}/${ITERATIONS} ==="
-    docker compose run --rm autotrader sh -lc "
-      pip install --quiet -e '[dev]'
+    docker compose run --rm \
+      --entrypoint sh \
+      -v "${HOST_WORKDIR}:/workspace" \
+      -w /workspace \
+      autotrader -lc "
+        pip install --quiet -e '[dev]'
 
-      echo '[loop] format/lint'
-      ruff format src/ tests/
-      ruff check --fix src/ tests/
+        echo '[loop] lint/format checks'
+        ruff format --check src/ tests/
+        ruff check src/ tests/
 
-      echo '[loop] preflight'
-      autotrader preflight --config-dir '${CONFIG_DIR}'
+        echo '[loop] preflight'
+        autotrader preflight --config-dir '${CONFIG_DIR}'
 
-      echo '[loop] fast tests'
-      pytest -m 'not integration' -q
-    "
+        echo '[loop] fast tests'
+        pytest -m 'not integration' -q
 
-    if [[ "${FULL_TESTS}" -eq 1 ]]; then
-      echo "[loop] full tests"
-      docker compose run --rm autotrader sh -lc "pip install --quiet -e '[dev]' && pytest -q"
-    fi
+        if [[ '${FULL_TESTS}' -eq 1 ]]; then
+          echo '[loop] full tests'
+          pytest -q
+        fi
+      "
 
     echo "[$(date -Iseconds)] iteration ${i} completed"
   } >>"$REPORT" 2>&1
