@@ -436,6 +436,27 @@ class TestHelpers:
         assert market.ticker == "T1"
         assert market.result == "yes"
 
+    def test_parse_market_yes_sub_title_fallback(self) -> None:
+        """When subtitle is empty, yes_sub_title should be used."""
+        data = {
+            "ticker": "KXTOPMODEL-26MAR07-KIMI",
+            "subtitle": "",
+            "yes_sub_title": "Kimi",
+            "title": "What will be the top AI model this week?",
+        }
+        market = KalshiAPIClient._parse_market(data)
+        assert market.subtitle == "Kimi"
+
+    def test_parse_market_subtitle_preferred_over_yes_sub_title(self) -> None:
+        """When subtitle is present, it should take precedence."""
+        data = {
+            "ticker": "T1",
+            "subtitle": "Claude Opus 4.6",
+            "yes_sub_title": "Yes: Claude Opus 4.6",
+        }
+        market = KalshiAPIClient._parse_market(data)
+        assert market.subtitle == "Claude Opus 4.6"
+
     def test_parse_market_missing_fields(self) -> None:
         """Should handle missing fields gracefully with defaults."""
         market = KalshiAPIClient._parse_market({})

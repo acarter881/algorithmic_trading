@@ -633,7 +633,7 @@ class KalshiAPIClient:
             event_ticker=data.get("event_ticker", ""),
             series_ticker=data.get("series_ticker", ""),
             title=data.get("title", ""),
-            subtitle=data.get("subtitle", ""),
+            subtitle=data.get("subtitle", "") or data.get("yes_sub_title", ""),
             status=data.get("status", ""),
             yes_bid=data.get("yes_bid", 0),
             yes_ask=data.get("yes_ask", 0),
