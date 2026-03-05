@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +20,15 @@ from autotrader.api.client import (
     PositionInfo,
 )
 from autotrader.config.models import KalshiConfig
+
+
+def _mock_raw_response(data: dict, status: int = 200) -> MagicMock:
+    """Create a mock RESTResponse that returns JSON data."""
+    resp = MagicMock()
+    resp.data = json.dumps(data).encode()
+    resp.status = status
+    resp.reason = "OK" if status == 200 else "Error"
+    return resp
 
 
 @pytest.fixture
@@ -134,14 +144,15 @@ class TestRetryLogic:
 
 class TestMarketData:
     def test_get_market(self, client: KalshiAPIClient) -> None:
-        client.client.get_market.return_value = MagicMock(
-            to_dict=lambda: {
+        client.client.call_api.return_value = _mock_raw_response(
+            {
                 "market": {
                     "ticker": "KXTOPMODEL-26FEB28-CLAUDE",
                     "event_ticker": "KXTOPMODEL-26FEB28",
                     "series_ticker": "KXTOPMODEL",
                     "title": "Claude Opus 4.6",
                     "subtitle": "",
+                    "yes_sub_title": "Claude Opus 4.6",
                     "status": "active",
                     "yes_bid": 65,
                     "yes_ask": 67,
@@ -160,13 +171,14 @@ class TestMarketData:
         market = client.get_market("KXTOPMODEL-26FEB28-CLAUDE")
         assert isinstance(market, MarketInfo)
         assert market.ticker == "KXTOPMODEL-26FEB28-CLAUDE"
+        assert market.subtitle == "Claude Opus 4.6"
         assert market.yes_bid == 65
         assert market.yes_ask == 67
         assert market.volume == 15000
 
     def test_get_markets_with_pagination(self, client: KalshiAPIClient) -> None:
-        client.client.get_markets.return_value = MagicMock(
-            to_dict=lambda: {
+        client.client.call_api.return_value = _mock_raw_response(
+            {
                 "markets": [
                     {
                         "ticker": "T1",
@@ -174,6 +186,7 @@ class TestMarketData:
                         "series_ticker": "S1",
                         "title": "Market 1",
                         "subtitle": "",
+                        "yes_sub_title": "Model Alpha",
                         "status": "active",
                         "yes_bid": 50,
                         "yes_ask": 52,
@@ -194,7 +207,30 @@ class TestMarketData:
         markets, cursor = client.get_markets(event_ticker="E1")
         assert len(markets) == 1
         assert markets[0].ticker == "T1"
+        assert markets[0].subtitle == "Model Alpha"
         assert cursor == "next-page-token"
+
+    def test_get_markets_raw_retries_on_429(self, client: KalshiAPIClient) -> None:
+        """Non-2xx from raw HTTP call should raise ApiException for retry."""
+        error_resp = _mock_raw_response({"error": "rate limited"}, status=429)
+        ok_resp = _mock_raw_response({"markets": [{"ticker": "T1", "subtitle": "M1"}], "cursor": None})
+        client.client.call_api.side_effect = [error_resp, ok_resp]
+
+        with patch("time.sleep"):
+            markets, cursor = client.get_markets(series_ticker="KXTOPMODEL")
+
+        assert len(markets) == 1
+        assert client.client.call_api.call_count == 2
+
+    def test_get_market_raw_raises_on_401(self, client: KalshiAPIClient) -> None:
+        """401 from raw HTTP should propagate as KalshiAPIError (no retry)."""
+        error_resp = _mock_raw_response({"error": "unauthorized"}, status=401)
+        client.client.call_api.return_value = error_resp
+
+        with pytest.raises(KalshiAPIError) as exc_info:
+            client.get_market("KXTOPMODEL-26MAR-CLAUDE")
+
+        assert exc_info.value.status_code == 401
 
     def test_get_orderbook(self, client: KalshiAPIClient) -> None:
         client.client.get_market_orderbook.return_value = MagicMock(
@@ -371,15 +407,15 @@ class TestEventDiscovery:
         assert events[1]["ticker"] == "KXTOPMODEL-26MAR07"
 
     def test_discover_markets_for_event(self, client: KalshiAPIClient) -> None:
-        client.client.get_markets.return_value = MagicMock(
-            to_dict=lambda: {
+        client.client.call_api.return_value = _mock_raw_response(
+            {
                 "markets": [
                     {
                         "ticker": f"KXTOPMODEL-26FEB28-M{i}",
                         "event_ticker": "KXTOPMODEL-26FEB28",
                         "series_ticker": "KXTOPMODEL",
                         "title": f"Model {i}",
-                        "subtitle": "",
+                        "subtitle": f"Model {i}",
                         "status": "active",
                         "yes_bid": 50,
                         "yes_ask": 52,
