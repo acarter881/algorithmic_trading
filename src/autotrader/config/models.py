@@ -91,6 +91,8 @@ class LeaderboardAlphaConfig(BaseModel):
     mispricing_detection_enabled: bool = True
     mispricing_min_edge_cents: int = 5
     mispricing_cooldown_seconds: int = 300
+    model_overrides: dict[str, str] = Field(default_factory=dict)
+    org_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class DiscordConfig(BaseModel):

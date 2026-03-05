@@ -13,3 +13,14 @@ leaderboard_alpha:
     - KXTOPMODEL
     - KXLLM1
   mapping_validation_top_n: 20
+
+  # Manual ticker overrides: Arena name → Kalshi ticker.
+  # Use these when fuzzy matching can't bridge the gap (e.g. org name vs
+  # product name).  The startup mapping report prints copy-paste YAML for
+  # any unresolved entries.
+  model_overrides: {}
+  #   "grok-4.1": "KXTOPMODEL-26MAR31-GROK"
+
+  org_overrides: {}
+  #   "xAI": "KXLLM1-26MAR07-XAI"
+  #   "Google": "KXLLM1-26MAR07-GOOG"
