@@ -370,9 +370,7 @@ class RiskManager:
     def _current_gross_position_for_ticker_in_event(self, ticker: str, event_ticker: str) -> int:
         """Sum of absolute position quantities for a ticker within an event."""
         return sum(
-            abs(p.quantity)
-            for p in self._portfolio.positions
-            if p.ticker == ticker and p.event_ticker == event_ticker
+            abs(p.quantity) for p in self._portfolio.positions if p.ticker == ticker and p.event_ticker == event_ticker
         )
 
     def _total_exposure_cents(self) -> int:

@@ -23,15 +23,19 @@ def _config(
     strategy_limits: dict[str, RiskStrategyConfig] | None = None,
     event_exposure_mode: str = "gross",
 ) -> RiskConfig:
-    limits = strategy_limits if strategy_limits is not None else {
-        "leaderboard_alpha": RiskStrategyConfig(
-            max_position_per_contract=100,
-            max_position_per_event=250,
-            event_exposure_mode=event_exposure_mode,
-            max_strategy_loss=200,
-            min_edge_multiplier=2.5,
-        )
-    }
+    limits = (
+        strategy_limits
+        if strategy_limits is not None
+        else {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=100,
+                max_position_per_event=250,
+                event_exposure_mode=event_exposure_mode,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
+    )
     return RiskConfig(
         global_config=RiskGlobalConfig(
             max_portfolio_exposure_pct=max_portfolio_exposure_pct,
