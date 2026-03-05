@@ -320,3 +320,40 @@ async def test_duplicate_name_lexicographic_tiebreaker_is_stable() -> None:
     second = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
     assert first == "KXTOPMODEL-26MAR-GPT5A"
     assert second == first
+
+
+@pytest.mark.asyncio
+async def test_duplicate_name_parses_event_ticker_yy_suffix_without_close_time() -> None:
+    cfg = LeaderboardAlphaConfig(
+        target_series=["KXTOPMODEL"],
+        mapping_event_selection="nearest_expiration",
+    )
+    strategy = LeaderboardAlphaStrategy(config=cfg)
+    await strategy.initialize(
+        {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-26FEB28-GPT5",
+                    "event_ticker": "KXTOPMODEL-26FEB28",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 41,
+                    "yes_ask": 46,
+                    "last_price": 44,
+                },
+                {
+                    "ticker": "KXTOPMODEL-26MAR07-GPT5",
+                    "event_ticker": "KXTOPMODEL-26MAR07",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 42,
+                    "yes_ask": 47,
+                    "last_price": 45,
+                },
+            ]
+        },
+        None,
+    )
+
+    resolved = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
+    assert resolved == "KXTOPMODEL-26FEB28-GPT5"

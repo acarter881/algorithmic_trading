@@ -1080,16 +1080,24 @@ class LeaderboardAlphaStrategy(Strategy):
                 return datetime.fromisoformat(close_time.replace("Z", "+00:00"))
             except ValueError:
                 pass
-        match = re.search(r"-(\d{2})([A-Z]{3})(?:$|-)", event_ticker or "")
+
+        # Kalshi event tickers are commonly shaped like "...-26MAR" or
+        # "...-26MAR07" (YY suffix). Parse either so expiration ranking
+        # still works when close_time is missing.
+        match = re.search(r"-(\d{2})([A-Z]{3})(\d{2})?(?:$|-)", event_ticker or "")
         if not match:
             return None
+
         day = int(match.group(1))
         month = match.group(2)
-        year = datetime.now(UTC).year
+        year_suffix = match.group(3)
+        year = 2000 + int(year_suffix) if year_suffix else datetime.now(UTC).year
         try:
             parsed = datetime.strptime(f"{day:02d}{month}{year}", "%d%b%Y").replace(tzinfo=UTC)
         except ValueError:
             return None
+        if year_suffix:
+            return parsed
         if parsed < datetime.now(UTC):
             try:
                 return parsed.replace(year=year + 1)
