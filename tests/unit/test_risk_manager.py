@@ -368,6 +368,36 @@ class TestPositionPerEvent:
         decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", side="yes", quantity=6))
         assert decision.approved
 
+    def test_gross_mode_uses_strategy_leg_projection_for_same_ticker(self) -> None:
+        positions = [
+            PositionInfo(
+                ticker="KXTOPMODEL-CLAUDE5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=95,
+                strategy="leaderboard_alpha",
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-CLAUDE5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=-95,
+                strategy="other_strategy",
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-GPT5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=55,
+                strategy="leaderboard_alpha",
+            ),
+        ]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", side="yes", quantity=6))
+
+        # Current event gross: 95 + 95 + 55 = 245.
+        # The order applies to leaderboard_alpha's CLAUDE5 leg only: abs(95) -> abs(101), so projected=251.
+        assert not decision.approved
+        assert any("projected_gross=251" in reason for reason in decision.rejection_reasons)
+
 
 # ── Daily Loss ───────────────────────────────────────────────────────────
 

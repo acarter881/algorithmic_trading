@@ -107,6 +107,7 @@ class ReplayEngine:
                     ticker=t,
                     event_ticker=t.rsplit("-", 1)[0] if "-" in t else t,
                     quantity=c.position,
+                    strategy=strategy.name,
                     avg_cost_cents=float(c.last_price or c.yes_ask),
                 )
                 for t, c in strategy.contracts.items()

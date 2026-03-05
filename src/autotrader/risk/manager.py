@@ -77,6 +77,7 @@ class PositionInfo:
     ticker: str
     event_ticker: str
     quantity: int  # Positive = long YES
+    strategy: str | None = None
     avg_cost_cents: float = 0.0
     unrealized_pnl_cents: float = 0.0
 
@@ -259,9 +260,15 @@ class RiskManager:
 
         if event_exposure_mode == "gross":
             current_event_pos = self._current_gross_position_for_event(event_ticker)
-            current_ticker_gross = self._current_gross_position_for_ticker_in_event(order.ticker, event_ticker)
-            projected_ticker_net = self._current_position_for_ticker(order.ticker) + signed_delta
-            projected_event_pos = current_event_pos - current_ticker_gross + abs(projected_ticker_net)
+            current_strategy_ticker_pos = self._current_position_for_ticker_and_strategy(
+                ticker=order.ticker,
+                event_ticker=event_ticker,
+                strategy=order.strategy,
+            )
+            projected_strategy_ticker_pos = current_strategy_ticker_pos + signed_delta
+            projected_event_pos = (
+                current_event_pos - abs(current_strategy_ticker_pos) + abs(projected_strategy_ticker_pos)
+            )
             exceeded = projected_event_pos > max_event_pos
         else:
             current_event_pos = self._current_position_for_event(event_ticker)
@@ -367,10 +374,15 @@ class RiskManager:
         """Sum of absolute position quantities across an event."""
         return sum(abs(p.quantity) for p in self._portfolio.positions if p.event_ticker == event_ticker)
 
-    def _current_gross_position_for_ticker_in_event(self, ticker: str, event_ticker: str) -> int:
-        """Sum of absolute position quantities for a ticker within an event."""
+    def _current_position_for_ticker_and_strategy(self, ticker: str, event_ticker: str, strategy: str) -> int:
+        """Signed position for a ticker/event tuple scoped to one strategy.
+
+        Falls back to strategy-less entries for compatibility with older snapshots.
+        """
         return sum(
-            abs(p.quantity) for p in self._portfolio.positions if p.ticker == ticker and p.event_ticker == event_ticker
+            p.quantity
+            for p in self._portfolio.positions
+            if p.ticker == ticker and p.event_ticker == event_ticker and p.strategy in {None, strategy}
         )
 
     def _total_exposure_cents(self) -> int:
