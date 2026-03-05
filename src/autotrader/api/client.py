@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 import structlog
 from kalshi_python import ApiException, Configuration, KalshiClient  # type: ignore[attr-defined]
@@ -292,15 +294,26 @@ class KalshiAPIClient:
         return self._to_dict(result)
 
     def get_market(self, ticker: str) -> MarketInfo:
-        """Get a single market's details."""
-        result = self._call_with_retry(
+        """Get a single market's details.
+
+        Uses a raw HTTP call to preserve all API fields (see
+        :meth:`get_markets` for rationale).
+        """
+        data = self._call_with_retry(
             "get_market",
-            self.client.get_market,
+            self._get_market_raw,
             ticker,
         )
-        data = self._to_dict(result)
         market = data.get("market", data)
         return self._parse_market(market)
+
+    def _get_market_raw(self, ticker: str) -> dict[str, Any]:
+        """Fetch ``/markets/{ticker}`` via raw HTTP, preserving all API fields."""
+        base_url = self._config.base_url.rstrip("/")
+        url = f"{base_url}/markets/{ticker}"
+        response = self.client.call_api("GET", url)
+        response.read()
+        return json.loads(response.data)
 
     def get_markets(
         self,
@@ -310,25 +323,58 @@ class KalshiAPIClient:
         limit: int = 200,
         cursor: str | None = None,
     ) -> tuple[list[MarketInfo], str | None]:
-        """List markets with optional filters. Returns (markets, next_cursor)."""
-        kwargs: dict[str, Any] = {"limit": limit}
-        if event_ticker:
-            kwargs["event_ticker"] = event_ticker
-        if series_ticker:
-            kwargs["series_ticker"] = series_ticker
-        if status:
-            kwargs["status"] = status
-        if cursor:
-            kwargs["cursor"] = cursor
-        result = self._call_with_retry(
+        """List markets with optional filters. Returns (markets, next_cursor).
+
+        Uses a raw HTTP call instead of the SDK's ``get_markets`` method
+        because the SDK's ``Market`` pydantic model does not include the
+        ``yes_sub_title`` field.  The SDK silently discards it during
+        deserialization, which prevents contract-name extraction for
+        markets where ``subtitle`` is empty but ``yes_sub_title`` holds
+        the model/org name.
+        """
+        data = self._call_with_retry(
             "get_markets",
-            self.client.get_markets,
-            **kwargs,
+            self._get_markets_raw,
+            event_ticker=event_ticker,
+            series_ticker=series_ticker,
+            status=status,
+            limit=limit,
+            cursor=cursor,
         )
-        data = self._to_dict(result)
         markets = [self._parse_market(m) for m in data.get("markets", [])]
         next_cursor = data.get("cursor")
         return markets, next_cursor
+
+    def _get_markets_raw(
+        self,
+        event_ticker: str | None = None,
+        series_ticker: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch ``/markets`` via raw HTTP, preserving all API fields.
+
+        The kalshi-python SDK's ``Market`` model omits ``yes_sub_title``
+        (and any other fields not in its schema).  By parsing the JSON
+        response ourselves we retain every field the API returns.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if status:
+            params["status"] = status
+        if cursor:
+            params["cursor"] = cursor
+
+        base_url = self._config.base_url.rstrip("/")
+        url = f"{base_url}/markets?{urlencode(params)}"
+
+        response = self.client.call_api("GET", url)
+        response.read()
+        return json.loads(response.data)
 
     def get_orderbook(self, ticker: str, depth: int | None = None) -> Orderbook:
         """Get the orderbook for a market."""
