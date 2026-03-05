@@ -320,7 +320,7 @@ class KalshiAPIClient:
         status: int = response.status
         if status < 200 or status >= 300:
             raise ApiException(status=status, reason=response.reason)
-        raw: bytes = response.data  # type: ignore[assignment]
+        raw: bytes = response.data
         return json.loads(raw)  # type: ignore[no-any-return]
 
     def _get_market_raw(self, ticker: str) -> dict[str, Any]:
