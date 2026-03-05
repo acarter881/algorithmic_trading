@@ -502,76 +502,64 @@ class LeaderboardAlphaStrategy(Strategy):
             for o in mapped_orgs:
                 lines.append(f"    {o['org']!r:40s} -> {o['ticker']}")
 
-        # Collect already-mapped tickers so _best_ticker_guess can skip them.
+        # Collect already-mapped tickers so we can show what's still available.
         mapped_tickers: set[str] = {m["ticker"] for m in mapped_models} | {o["ticker"] for o in mapped_orgs}
-
-        # Threshold below which we consider the entry "not on Kalshi".
-        on_kalshi_threshold = 0.50
 
         if unmapped_models or unmapped_orgs:
             lines.append("")
             lines.append("-" * 64)
-            lines.append("  UNMAPPED — add to config/strategies/leaderboard_alpha.yaml:")
+            lines.append("  UNMAPPED")
             lines.append("-" * 64)
 
         if unmapped_models:
-            # Compute guesses and separate into "likely on Kalshi" vs "not on Kalshi"
-            model_guesses: list[tuple[dict[str, Any], str | None, float, str]] = []
+            lines.append("")
+            lines.append("  Arena models not matched (no Kalshi contract auto-resolved):")
             for m in unmapped_models:
-                guess, score = self._best_ticker_guess(m["model"], "KXTOPMODEL", exclude_tickers=mapped_tickers)
-                contract_name = self._ticker_model_names.get(guess, "?") if guess else "?"
-                model_guesses.append((m, guess, score, contract_name))
+                lines.append(f"    {m['model']:45s}  (rank_ub={m['rank_ub']})")
 
-            likely_on = [(m, g, s, cn) for m, g, s, cn in model_guesses if g and s >= on_kalshi_threshold]
-            not_on = [(m, g, s, cn) for m, g, s, cn in model_guesses if not g or s < on_kalshi_threshold]
-
-            if likely_on:
+            # Show unmapped KXTOPMODEL contracts — these exist on Kalshi
+            # but no Arena entry claimed them.
+            unmapped_model_tickers = sorted(
+                t
+                for t in self._ticker_model_names
+                if self._ticker_series(t) == "KXTOPMODEL" and t not in mapped_tickers
+            )
+            if unmapped_model_tickers:
                 lines.append("")
+                lines.append("  Unmapped KXTOPMODEL contracts on Kalshi:")
+                for t in unmapped_model_tickers:
+                    name = self._ticker_model_names[t]
+                    lines.append(f"    {t:45s} ({name})")
+                lines.append("")
+                lines.append("  If an Arena model should map to one of these, add to")
+                lines.append("  config/strategies/leaderboard_alpha.yaml:")
                 lines.append("  model_ticker_overrides:")
-                lines.append("  # These Arena models likely have a Kalshi contract (score >= 50%).")
-                lines.append("  # Uncomment and verify the correct mapping:")
-                for m, guess, score, contract_name in likely_on:
-                    rank_info = f"rank_ub={m['rank_ub']}"
-                    lines.append(f'    # "{m["model"]}": "{guess}"  # {rank_info}, best={contract_name} ({score:.0%})')
-
-            if not_on:
-                lines.append("")
-                lines.append("  # Not on Kalshi (no matching contract found):")
-                for m, guess, score, contract_name in not_on:
-                    rank_info = f"rank_ub={m['rank_ub']}"
-                    if guess:
-                        lines.append(f"  #   {m['model']:40s}  # {rank_info}, closest={contract_name} ({score:.0%})")
-                    else:
-                        lines.append(f"  #   {m['model']:40s}  # {rank_info}, no candidates")
+                lines.append('    # "arena-model-name": "KXTOPMODEL-26MAR07-XXXX"')
 
         if unmapped_orgs:
-            org_guesses: list[tuple[dict[str, Any], str | None, float, str]] = []
+            lines.append("")
+            lines.append("  Arena orgs not matched:")
             for o in unmapped_orgs:
-                guess, score = self._best_ticker_guess(o["org"], "KXLLM1", exclude_tickers=mapped_tickers)
-                contract_name = self._ticker_model_names.get(guess, "?") if guess else "?"
-                org_guesses.append((o, guess, score, contract_name))
+                lines.append(f"    {o['org']:45s}")
 
-            likely_on_orgs = [(o, g, s, cn) for o, g, s, cn in org_guesses if g and s >= on_kalshi_threshold]
-            not_on_orgs = [(o, g, s, cn) for o, g, s, cn in org_guesses if not g or s < on_kalshi_threshold]
-
-            if likely_on_orgs:
+            unmapped_org_tickers = sorted(
+                t for t in self._ticker_model_names if self._ticker_series(t) == "KXLLM1" and t not in mapped_tickers
+            )
+            if unmapped_org_tickers:
                 lines.append("")
+                lines.append("  Unmapped KXLLM1 contracts on Kalshi:")
+                for t in unmapped_org_tickers:
+                    name = self._ticker_model_names[t]
+                    lines.append(f"    {t:45s} ({name})")
+                lines.append("")
+                lines.append("  If an Arena org should map to one of these, add to")
+                lines.append("  config/strategies/leaderboard_alpha.yaml:")
                 lines.append("  org_ticker_overrides:")
-                for o, guess, score, contract_name in likely_on_orgs:
-                    lines.append(f'    # "{o["org"]}": "{guess}"  # best={contract_name} ({score:.0%})')
-
-            if not_on_orgs:
-                lines.append("")
-                lines.append("  # Orgs not on Kalshi (no matching contract found):")
-                for o, guess, score, contract_name in not_on_orgs:
-                    if guess:
-                        lines.append(f"  #   {o['org']:40s}  # closest={contract_name} ({score:.0%})")
-                    else:
-                        lines.append(f"  #   {o['org']:40s}  # no candidates")
+                lines.append('    # "arena-org-name": "KXLLM1-26MAR07-XXXX"')
 
         if unmapped_models or unmapped_orgs:
             lines.append("")
-            lines.append("  Available tickers for reference:")
+            lines.append("  All Kalshi contracts (* = already mapped):")
             for series in ("KXTOPMODEL", "KXLLM1"):
                 tickers = sorted(t for t in self._ticker_model_names if self._ticker_series(t) == series)
                 if tickers:
