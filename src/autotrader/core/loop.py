@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -75,6 +76,8 @@ class TradingLoop:
         self._cached_balance_cents: int | None = None
         self._rankings_seeded = False
         self._ws_pending_proposals: list[ProposedOrder] = []
+        self._start_time: float = time.monotonic()
+        self._heartbeat_interval_ticks = 60  # ~30 min at 30s poll
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -316,6 +319,8 @@ class TradingLoop:
 
         while self._running:
             await self._tick()
+            if self._tick_count % self._heartbeat_interval_ticks == 0:
+                self._log_heartbeat()
             if ticks_per_reconcile and self._tick_count % ticks_per_reconcile == 0:
                 await self._reconcile_positions()
             self._check_websocket_health()
@@ -477,6 +482,33 @@ class TradingLoop:
             logger.exception("tick_error", tick=self._tick_count)
             self._persist_system_event("tick_error", {"tick": self._tick_count}, "error")
             await self._send_error_alert("tick_error", f"Tick {self._tick_count} failed — see logs")
+
+    def _log_heartbeat(self) -> None:
+        """Emit a periodic INFO-level heartbeat for 24/7 liveness monitoring."""
+        uptime_seconds = int(time.monotonic() - self._start_time)
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+
+        positions_held = 0
+        contracts_tracked = 0
+        for strat in self._strategies.values():
+            if hasattr(strat, "contracts"):
+                contracts_tracked += len(strat.contracts)
+                positions_held += sum(1 for c in strat.contracts.values() if hasattr(c, "position") and c.position != 0)
+
+        open_orders = len(self._engine.get_open_orders()) if self._engine else 0
+
+        logger.info(
+            "heartbeat",
+            tick=self._tick_count,
+            uptime=f"{hours}h{minutes:02d}m{secs:02d}s",
+            contracts_tracked=contracts_tracked,
+            positions_held=positions_held,
+            open_orders=open_orders,
+            mode=self._engine.mode.value if self._engine else "unknown",
+            rankings_seeded=self._rankings_seeded,
+            websocket=self._ws_client is not None and self._ws_client.connected if self._ws_client else False,
+        )
 
     async def _tick_inner(self) -> None:
         """Inner tick logic — exceptions bubble up to _tick()."""

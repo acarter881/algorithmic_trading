@@ -173,7 +173,7 @@ class ArenaMonitor(SignalSource):
                 entries=entries,
                 pairwise=pairwise,
                 source_url=url,
-                captured_at=datetime.datetime.utcnow(),
+                captured_at=datetime.datetime.now(datetime.UTC),
             )
             logger.info(
                 "arena_leaderboard_fetched",
@@ -286,7 +286,7 @@ class ArenaMonitor(SignalSource):
         On the first poll (no previous snapshot), no diff signals are
         generated — only an initial snapshot signal.
         """
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
         signals: list[Signal] = []
 
         if self._previous_snapshot is None:
