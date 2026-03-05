@@ -1,6 +1,4 @@
-"""Unit tests for preflight helpers."""
-
-from __future__ import annotations
+"""Unit tests for preflight market validation helpers."""
 
 from unittest.mock import MagicMock
 
