@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
@@ -1435,11 +1434,39 @@ class TestSeedRankings:
         ]
         s.seed_rankings(entries)
 
-        # Top models (rank_ub <= 10) should have tickers resolved
+        # Top-N models (sorted by rank_ub) should have tickers resolved
         assert s.model_ticker_map.get("GPT-5") == "KXTOPMODEL-GPT5"
         assert s.model_ticker_map.get("Gemini 3") == "KXTOPMODEL-GEMINI3"
-        # rank_ub=15 should NOT be resolved
-        assert "SomeModel" not in s.model_ticker_map
+
+    async def test_seed_respects_top_n_limit(self) -> None:
+        """Only top mapping_validation_top_n entries are eagerly resolved."""
+        cfg = _config(mapping_validation_top_n=1)
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [
+            _entry(name="GPT-5", rank_ub=1, organization="OpenAI"),
+            _entry(name="Gemini 3", rank_ub=2, organization="Google"),
+        ]
+        s.seed_rankings(entries)
+
+        # Only top 1 by rank_ub should be resolved
+        assert s.model_ticker_map.get("GPT-5") == "KXTOPMODEL-GPT5"
+        assert "Gemini 3" not in s.model_ticker_map
+
+    async def test_seed_works_with_large_rank_ub(self) -> None:
+        """rank_ub from CI spread (e.g. 13) should still resolve."""
+        s = _strategy()
+        await s.initialize(MARKET_DATA, None)
+
+        entries = [
+            _entry(name="GPT-5", rank_ub=13, organization="OpenAI"),
+            _entry(name="Gemini 3", rank_ub=45, organization="Google"),
+        ]
+        s.seed_rankings(entries)
+
+        assert s.model_ticker_map.get("GPT-5") == "KXTOPMODEL-GPT5"
+        assert s.model_ticker_map.get("Gemini 3") == "KXTOPMODEL-GEMINI3"
 
     async def test_seed_populates_pairwise(self) -> None:
         from autotrader.signals.arena_types import PairwiseAggregate
@@ -1496,75 +1523,47 @@ class TestSeedRankings:
         assert s._org_ticker_map.get("Google DeepMind") == "KXLLM1-GOOGLE"
         assert s._org_ticker_map.get("Meta AI") == "KXLLM1-META"
 
-
-class TestTickerOverrides:
-    async def test_model_override_takes_precedence_over_fuzzy_match(self) -> None:
-        cfg = _config(
-            model_ticker_overrides={"GPT-5": "KXTOPMODEL-GEMINI3"},
-            target_series=["KXTOPMODEL"],
-        )
+    async def test_config_model_overrides_applied(self) -> None:
+        """Manual model overrides in config should take effect."""
+        cfg = _config(model_ticker_overrides={"UnknownModel": "KXTOPMODEL-GPT5"})
         s = _strategy(cfg=cfg)
         await s.initialize(MARKET_DATA, None)
 
-        ticker = s._resolve_ticker("GPT-5", series="KXTOPMODEL")
+        entries = [_entry(name="UnknownModel", rank_ub=1)]
+        s.seed_rankings(entries)
 
-        assert ticker == "KXTOPMODEL-GEMINI3"
+        assert s.model_ticker_map.get("UnknownModel") == "KXTOPMODEL-GPT5"
 
-    async def test_org_override_takes_precedence_over_fuzzy_match(self, org_market_data: dict[str, object]) -> None:
+    async def test_config_org_overrides_applied(self) -> None:
+        """Manual org overrides in config should take effect."""
         cfg = _config(
             target_series=["KXTOPMODEL", "KXLLM1"],
-            org_ticker_overrides={"Google DeepMind": "KXLLM1-OPENAI"},
+            org_ticker_overrides={"xAI": "KXLLM1-XAI"},
         )
         s = _strategy(cfg=cfg)
-        await s.initialize(org_market_data, None)
+        market_data = {
+            "markets": [
+                {"ticker": "KXLLM1-XAI", "subtitle": "Grok", "yes_bid": 30, "yes_ask": 34, "last_price": 32},
+            ],
+        }
+        await s.initialize(market_data, None)
 
-        ticker = s._resolve_ticker("Google DeepMind", series="KXLLM1")
+        entries = [_entry(name="Grok-4", rank_ub=1, organization="xAI")]
+        s.seed_rankings(entries)
 
-        assert ticker == "KXLLM1-OPENAI"
+        assert s._org_ticker_map.get("xAI") == "KXLLM1-XAI"
 
-    async def test_validate_mappings_warns_on_unknown_override_ticker(self) -> None:
-        cfg = _config(
-            target_series=["KXTOPMODEL"],
-            model_ticker_overrides={"GPT-5": "KXTOPMODEL-UNKNOWN"},
-        )
-        s = _strategy(cfg=cfg)
-        await s.initialize(MARKET_DATA, None)
-        s.seed_rankings([_entry(name="GPT-5", rank_ub=1)])
-
-        with patch("autotrader.strategies.leaderboard_alpha.logger.warning") as warn:
-            s.validate_mappings()
-
-        warn.assert_any_call(
-            "model_override_unknown_ticker",
-            model="GPT-5",
-            ticker="KXTOPMODEL-UNKNOWN",
-            known_ticker_count=len(s._contracts),
-        )
-
-    async def test_alias_supports_override_lookup(self) -> None:
-        cfg = _config(
-            target_series=["KXTOPMODEL"],
-            model_aliases={"GPT5": "GPT-5"},
-            model_ticker_overrides={"GPT-5": "KXTOPMODEL-GPT5"},
-        )
+    async def test_config_override_unknown_ticker_ignored(self) -> None:
+        """Override pointing to a non-existent ticker should be skipped."""
+        cfg = _config(model_ticker_overrides={"GPT-5": "KXTOPMODEL-NONEXISTENT"})
         s = _strategy(cfg=cfg)
         await s.initialize(MARKET_DATA, None)
 
-        ticker = s._resolve_ticker("GPT5", series="KXTOPMODEL")
+        entries = [_entry(name="GPT-5", rank_ub=1)]
+        s.seed_rankings(entries)
 
-        assert ticker == "KXTOPMODEL-GPT5"
-
-    async def test_org_alias_uses_stripped_resolved_name_for_matching(self, org_market_data: dict[str, object]) -> None:
-        cfg = _config(
-            target_series=["KXTOPMODEL", "KXLLM1"],
-            org_aliases={"Alphabet": "Google DeepMind"},
-        )
-        s = _strategy(cfg=cfg)
-        await s.initialize(org_market_data, None)
-
-        ticker = s._resolve_ticker("Alphabet", series="KXLLM1")
-
-        assert ticker == "KXLLM1-GOOGLE"
+        # Override was skipped, but fuzzy matching should still work
+        assert s.model_ticker_map.get("GPT-5") == "KXTOPMODEL-GPT5"
 
 
 # ── Mispricing detection ───────────────────────────────────────────────

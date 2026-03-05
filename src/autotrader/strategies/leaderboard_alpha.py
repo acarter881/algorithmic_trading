@@ -77,9 +77,9 @@ class ContractView:
 
     ticker: str
     model_name: str  # Name extracted from Kalshi contract title/subtitle
+    series: str = ""
     event_ticker: str = ""
     close_time: str = ""
-    series: str = ""
     yes_bid: int = 0
     yes_ask: int = 0
     last_price: int = 0
@@ -183,9 +183,9 @@ class LeaderboardAlphaStrategy(Strategy):
                 self._contracts[ticker] = ContractView(
                     ticker=ticker,
                     model_name=model_name,
+                    series=self._ticker_series(ticker),
                     event_ticker=event_ticker,
                     close_time=m.get("close_time", ""),
-                    series=self._ticker_series(ticker),
                     yes_bid=m.get("yes_bid", 0),
                     yes_ask=m.get("yes_ask", 0),
                     last_price=m.get("last_price", 0),
@@ -260,10 +260,6 @@ class LeaderboardAlphaStrategy(Strategy):
             event_ticker = data.get("event_ticker")
             if isinstance(event_ticker, str) and event_ticker:
                 self._ticker_event_map[data["ticker"]] = event_ticker
-                c.event_ticker = event_ticker
-            close_time = data.get("close_time")
-            if isinstance(close_time, str) and close_time:
-                c.close_time = close_time
             return self._check_mispricing(c)
         return []
 
@@ -333,15 +329,23 @@ class LeaderboardAlphaStrategy(Strategy):
             self._pairwise.update(pairwise)
         self._rebuild_org_rankings()
 
-        # Eagerly resolve tickers for competitive models
-        eligible = [e for e in entries if 0 < e.rank_ub <= 10]
+        # Eagerly resolve tickers for competitive models.
+        # Sort by rank_ub and take the top N rather than filtering by a
+        # hardcoded threshold — the Arena's rank_ub is a confidence-
+        # interval bound (e.g. rank 1 with spread 1-13 → rank_ub=13),
+        # not a display rank, so a fixed cutoff silently drops everyone.
+        top_n = self._config.mapping_validation_top_n
+        eligible = sorted(
+            (e for e in entries if e.rank_ub > 0),
+            key=lambda e: e.rank_ub,
+        )[:top_n]
         if not eligible:
             logger.warning(
                 "seed_rankings_no_eligible_models",
                 strategy=self.name,
                 total_entries=len(entries),
                 sample_rank_ubs=[e.rank_ub for e in entries[:10]],
-                hint="No entries with 0 < rank_ub <= 10; check arena parser output",
+                hint="No entries with rank_ub > 0; check arena parser output",
             )
         for entry in eligible:
             self._resolve_ticker(entry.model_name, series="KXTOPMODEL")
@@ -383,8 +387,6 @@ class LeaderboardAlphaStrategy(Strategy):
         mapped_orgs: list[dict[str, Any]] = []
         unmapped_orgs: list[dict[str, Any]] = []
         seen_orgs: set[str] = set()
-
-        self._validate_override_tickers()
 
         for entry in ranked:
             # --- KXTOPMODEL: model → contract ---
@@ -443,49 +445,120 @@ class LeaderboardAlphaStrategy(Strategy):
                 unmapped_models=[m["model"] for m in unmapped_models],
                 unmapped_orgs=[o["org"] for o in unmapped_orgs],
             )
+        self._print_mapping_report(report)
         return report
 
-    def _validate_override_tickers(self) -> None:
-        """Warn when configured overrides target unknown or mismatched tickers."""
-        if not self._contracts:
-            return
+    def _print_mapping_report(self, report: dict[str, Any]) -> None:
+        """Print a human-readable mapping report to stdout.
 
-        known_tickers = set(self._contracts)
-        for arena_name, ticker in self._config.model_ticker_overrides.items():
-            if ticker not in known_tickers:
-                logger.warning(
-                    "model_override_unknown_ticker",
-                    model=arena_name,
-                    ticker=ticker,
-                    known_ticker_count=len(known_tickers),
-                )
-                continue
-            if self._ticker_series(ticker) != "KXTOPMODEL":
-                logger.warning(
-                    "model_override_wrong_series",
-                    model=arena_name,
-                    ticker=ticker,
-                    expected_series="KXTOPMODEL",
-                    actual_series=self._ticker_series(ticker),
-                )
+        Includes copy-paste YAML for any unmapped entries so the operator
+        can quickly add manual overrides to the config file.
+        """
+        mapped_models = report["mapped_models"]
+        unmapped_models = report["unmapped_models"]
+        mapped_orgs = report["mapped_orgs"]
+        unmapped_orgs = report["unmapped_orgs"]
+        top_n = report["top_n"]
 
-        for arena_org, ticker in self._config.org_ticker_overrides.items():
-            if ticker not in known_tickers:
-                logger.warning(
-                    "org_override_unknown_ticker",
-                    org=arena_org,
-                    ticker=ticker,
-                    known_ticker_count=len(known_tickers),
-                )
-                continue
-            if self._ticker_series(ticker) != "KXLLM1":
-                logger.warning(
-                    "org_override_wrong_series",
-                    org=arena_org,
-                    ticker=ticker,
-                    expected_series="KXLLM1",
-                    actual_series=self._ticker_series(ticker),
-                )
+        lines = [
+            "",
+            "=" * 64,
+            f"  MAPPING REPORT  (top {top_n} Arena entries)",
+            "=" * 64,
+            "",
+            f"  KXTOPMODEL  {len(mapped_models)} mapped, {len(unmapped_models)} unmapped",
+            f"  KXLLM1      {len(mapped_orgs)} mapped, {len(unmapped_orgs)} unmapped",
+            "",
+        ]
+
+        if mapped_models:
+            lines.append("  Mapped models:")
+            for m in mapped_models:
+                lines.append(f"    {m['model']!r:40s} -> {m['ticker']}")
+
+        if mapped_orgs:
+            lines.append("  Mapped orgs:")
+            for o in mapped_orgs:
+                lines.append(f"    {o['org']!r:40s} -> {o['ticker']}")
+
+        if unmapped_models or unmapped_orgs:
+            lines.append("")
+            lines.append("-" * 64)
+            lines.append("  UNMAPPED — add to config/strategies/leaderboard_alpha.yaml:")
+            lines.append("-" * 64)
+
+        if unmapped_models:
+            # Find best-guess ticker for each unmapped model
+            lines.append("")
+            lines.append("  model_ticker_overrides:")
+            for m in unmapped_models:
+                guess = self._best_ticker_guess(m["model"], "KXTOPMODEL")
+                comment = f"  # rank_ub={m['rank_ub']}, best guess"
+                if guess:
+                    lines.append(f'    "{m["model"]}": "{guess}"{comment}')
+                else:
+                    lines.append(f'    "{m["model"]}": "KXTOPMODEL-???"{comment}')
+
+        if unmapped_orgs:
+            lines.append("")
+            lines.append("  org_ticker_overrides:")
+            for o in unmapped_orgs:
+                guess = self._best_ticker_guess(o["org"], "KXLLM1")
+                comment = "  # best guess"
+                if guess:
+                    lines.append(f'    "{o["org"]}": "{guess}"{comment}')
+                else:
+                    lines.append(f'    "{o["org"]}": "KXLLM1-???"{comment}')
+
+        if unmapped_models or unmapped_orgs:
+            lines.append("")
+            lines.append("  Available tickers for reference:")
+            for series in ("KXTOPMODEL", "KXLLM1"):
+                tickers = sorted(t for t in self._ticker_model_names if self._ticker_series(t) == series)
+                if tickers:
+                    lines.append(f"    {series}:")
+                    for t in tickers:
+                        name = self._ticker_model_names[t]
+                        mapped_flag = (
+                            "*"
+                            if t in set(m["ticker"] for m in mapped_models) | set(o["ticker"] for o in mapped_orgs)
+                            else " "
+                        )
+                        lines.append(f"      {mapped_flag} {t:45s} ({name})")
+
+        lines.append("")
+        lines.append("=" * 64)
+        lines.append("")
+
+        print("\n".join(lines))
+
+    def _best_ticker_guess(self, name: str, series: str) -> str | None:
+        """Return the best-scoring ticker for *name* even if below threshold."""
+        from thefuzz import fuzz as _fuzz
+
+        from autotrader.utils.matching import normalize_model_name
+
+        scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
+        if not scoped:
+            return None
+
+        # For org names, also try the stripped variant
+        queries = [name]
+        if series == "KXLLM1":
+            stripped = normalize_org_name(name)
+            if stripped != name:
+                queries.append(stripped)
+
+        best_ticker = None
+        best_score = 0.0
+        for q in queries:
+            normalized = normalize_model_name(q)
+            for ticker, candidate in scoped.items():
+                score = _fuzz.token_sort_ratio(normalized, normalize_model_name(candidate)) / 100.0
+                if score > best_score:
+                    best_score = score
+                    best_ticker = ticker
+        return best_ticker
 
     # ── Fair value ────────────────────────────────────────────────────
 
@@ -968,12 +1041,11 @@ class LeaderboardAlphaStrategy(Strategy):
             ) or self._config.model_ticker_overrides.get(resolved_name)
 
         if override_ticker:
-            if override_ticker in self._ticker_model_names and (
-                series is None or self._ticker_series(override_ticker) == series
-            ):
-                cache = (
-                    self._org_ticker_map if self._ticker_series(override_ticker) == "KXLLM1" else self._model_ticker_map
-                )
+            ticker_known = override_ticker in self._ticker_model_names
+            ticker_series = self._ticker_series(override_ticker) if ticker_known else ""
+            series_ok = series is None or ticker_series == series
+            if ticker_known and series_ok:
+                cache = self._org_ticker_map if ticker_series == "KXLLM1" else self._model_ticker_map
                 cache[model_name] = override_ticker
                 if resolved_name != model_name:
                     cache[resolved_name] = override_ticker
@@ -985,12 +1057,18 @@ class LeaderboardAlphaStrategy(Strategy):
                     ticker=override_ticker,
                 )
                 return override_ticker
+            reason = (
+                "ticker not in loaded contracts"
+                if not ticker_known
+                else f"series mismatch: override is {ticker_series}, expected {series}"
+            )
             logger.warning(
                 "resolve_ticker_override_ignored",
                 model=model_name,
                 resolved_name=resolved_name,
                 series=series,
                 ticker=override_ticker,
+                reason=reason,
             )
 
         if series == "KXLLM1":
@@ -1171,9 +1249,6 @@ class LeaderboardAlphaStrategy(Strategy):
             except ValueError:
                 pass
 
-        # Kalshi event tickers are commonly shaped like "...-26MAR" or
-        # "...-26MAR07" (YY suffix). Parse either so expiration ranking
-        # still works when close_time is missing.
         match = re.search(r"-(\d{2})([A-Z]{3})(\d{2})?(?:$|-)", event_ticker or "")
         if not match:
             return None
