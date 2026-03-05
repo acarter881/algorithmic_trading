@@ -8,7 +8,9 @@ leaderboard_alpha:
   max_position_per_contract: 100.00
   max_position_per_event: 250.00
   preliminary_model_discount: 0.30
-  fuzzy_match_threshold: 0.80
+  # 0.90 prevents false positives like gemini-2.5-pro matching gemini-3-pro
+  # (which scores 0.85).  All legitimate matches are exact (1.0).
+  fuzzy_match_threshold: 0.90
   target_series:
     - KXTOPMODEL
     - KXLLM1
@@ -24,7 +26,9 @@ leaderboard_alpha:
   #   "xAI": "KXLLM1-26MAR07-XAI"
   #   "Google": "KXLLM1-26MAR07-GOOG"
 
-  # Aliases to normalize Arena names before matching
+  # Aliases to normalize Arena names before matching.
+  # Built-in org aliases (Anthropic→Claude, Google→Gemini, etc.) are
+  # applied automatically — only add entries here to override or extend.
   model_aliases: {}
   #   "GPT5": "GPT-5"
   org_aliases: {}
