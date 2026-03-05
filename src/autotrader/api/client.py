@@ -311,9 +311,10 @@ class KalshiAPIClient:
         """Fetch ``/markets/{ticker}`` via raw HTTP, preserving all API fields."""
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/markets/{ticker}"
-        response = self.client.call_api("GET", url)
+        response: Any = self.client.call_api("GET", url)
         response.read()
-        return json.loads(response.data)
+        raw: bytes = response.data  # type: ignore[assignment]
+        return json.loads(raw)  # type: ignore[no-any-return]
 
     def get_markets(
         self,
@@ -372,9 +373,10 @@ class KalshiAPIClient:
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/markets?{urlencode(params)}"
 
-        response = self.client.call_api("GET", url)
+        response: Any = self.client.call_api("GET", url)
         response.read()
-        return json.loads(response.data)
+        raw: bytes = response.data  # type: ignore[assignment]
+        return json.loads(raw)  # type: ignore[no-any-return]
 
     def get_orderbook(self, ticker: str, depth: int | None = None) -> Orderbook:
         """Get the orderbook for a market."""
