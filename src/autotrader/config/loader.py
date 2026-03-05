@@ -119,7 +119,10 @@ def load_config(
         for yaml_file in sorted(signals_dir.glob("*.yaml")):
             signal_data = _load_yaml(yaml_file)
             stem = yaml_file.stem.replace("-", "_")
-            data = _deep_merge(data, {stem: signal_data})
+            if stem in signal_data:
+                data = _deep_merge(data, {stem: signal_data[stem]})
+            else:
+                data = _deep_merge(data, {stem: signal_data})
 
     # Layer 6: env var overrides
     data = _apply_env_overrides(data)

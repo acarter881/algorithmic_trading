@@ -77,6 +77,31 @@ AUTOTRADER__KALSHI__EXECUTION_MODE=paper
 docker compose up -d --build
 ```
 
+### Development Loop (Docker-only)
+
+To iterate faster (lint/fix, preflight, and fast tests) use:
+
+```bash
+./scripts/docker_dev_loop.sh --iterations 3
+```
+
+Defaults:
+- runs Docker image build once
+- runs `ruff format` + `ruff check --fix`
+- runs `preflight` (including a target-series market-availability check)
+- runs fast tests (`pytest -m "not integration"`)
+- writes logs to `reports/docker-dev-loop-<timestamp>.log`
+
+Optional flags:
+
+```bash
+# Include full test suite after fast tests
+./scripts/docker_dev_loop.sh --iterations 1 --full-tests
+
+# Use alternate config directory
+./scripts/docker_dev_loop.sh --config-dir config --iterations 2
+```
+
 ### Monitoring
 
 ```powershell
@@ -120,7 +145,7 @@ Before running 24/7, walk through these steps once:
    ```bash
    docker compose run --rm autotrader preflight --config-dir config
    ```
-   This checks: config validity, DB init, Kalshi API authentication, Arena leaderboard reachability, and Discord webhook (if configured). All checks should pass before continuing.
+   This checks: config validity, DB init, Kalshi API authentication, Arena leaderboard reachability, required target-series market availability, and Discord webhook (if configured). All checks should pass before continuing.
 4. **Start the service:**
    ```bash
    docker compose up -d --build

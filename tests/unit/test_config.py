@@ -191,3 +191,35 @@ class TestLoadConfig:
         )
         config = load_config(config_dir=tmp_path)
         assert config.leaderboard_alpha.min_edge_after_fees_cents == 5
+
+    def test_signal_source_yaml_with_wrapped_key(self, tmp_path: Path) -> None:
+        signals_dir = tmp_path / "signal_sources"
+        signals_dir.mkdir()
+        arena = signals_dir / "arena_monitor.yaml"
+        arena.write_text(
+            yaml.dump(
+                {
+                    "arena_monitor": {
+                        "poll_interval_seconds": 12,
+                    }
+                }
+            )
+        )
+
+        config = load_config(config_dir=tmp_path)
+        assert config.arena_monitor.poll_interval_seconds == 12
+
+    def test_signal_source_yaml_with_flat_payload(self, tmp_path: Path) -> None:
+        signals_dir = tmp_path / "signal_sources"
+        signals_dir.mkdir()
+        arena = signals_dir / "arena_monitor.yaml"
+        arena.write_text(
+            yaml.dump(
+                {
+                    "poll_interval_seconds": 17,
+                }
+            )
+        )
+
+        config = load_config(config_dir=tmp_path)
+        assert config.arena_monitor.poll_interval_seconds == 17
