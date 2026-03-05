@@ -201,3 +201,159 @@ class TestContractMapping:
         expected = len(market_data["markets"])  # type: ignore[arg-type]
         actual = len(self.strategy.contracts)
         assert actual == expected, f"Expected {expected} contracts, got {actual}"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_model_name_prefers_configured_event() -> None:
+    cfg = LeaderboardAlphaConfig(
+        target_series=["KXTOPMODEL"],
+        preferred_event_tickers=["KXTOPMODEL-26MAR"],
+        mapping_event_selection="any",
+    )
+    strategy = LeaderboardAlphaStrategy(config=cfg)
+    await strategy.initialize(
+        {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-20APR-GPT5",
+                    "event_ticker": "KXTOPMODEL-20APR",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 40,
+                    "yes_ask": 45,
+                    "last_price": 43,
+                },
+                {
+                    "ticker": "KXTOPMODEL-26MAR-GPT5",
+                    "event_ticker": "KXTOPMODEL-26MAR",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 41,
+                    "yes_ask": 46,
+                    "last_price": 44,
+                },
+            ]
+        },
+        None,
+    )
+
+    resolved = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
+    assert resolved == "KXTOPMODEL-26MAR-GPT5"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_org_name_uses_nearest_expiration_then_ticker() -> None:
+    cfg = LeaderboardAlphaConfig(
+        target_series=["KXLLM1"],
+        mapping_event_selection="nearest_expiration",
+    )
+    strategy = LeaderboardAlphaStrategy(config=cfg)
+    await strategy.initialize(
+        {
+            "markets": [
+                {
+                    "ticker": "KXLLM1-31DEC-OPENAI",
+                    "event_ticker": "KXLLM1-31DEC",
+                    "subtitle": "OpenAI",
+                    "title": "OpenAI will have the #1 AI model",
+                    "close_time": "2030-12-31T00:00:00Z",
+                    "yes_bid": 20,
+                    "yes_ask": 25,
+                    "last_price": 22,
+                },
+                {
+                    "ticker": "KXLLM1-26MAR-OPENAI",
+                    "event_ticker": "KXLLM1-26MAR",
+                    "subtitle": "OpenAI",
+                    "title": "OpenAI will have the #1 AI model",
+                    "close_time": "2030-03-26T00:00:00Z",
+                    "yes_bid": 21,
+                    "yes_ask": 26,
+                    "last_price": 23,
+                },
+            ]
+        },
+        None,
+    )
+
+    resolved = strategy._resolve_ticker("OpenAI", series="KXLLM1")
+    assert resolved == "KXLLM1-26MAR-OPENAI"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_name_lexicographic_tiebreaker_is_stable() -> None:
+    cfg = LeaderboardAlphaConfig(
+        target_series=["KXTOPMODEL"],
+        mapping_event_selection="any",
+    )
+    strategy = LeaderboardAlphaStrategy(config=cfg)
+    await strategy.initialize(
+        {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-26MAR-GPT5B",
+                    "event_ticker": "KXTOPMODEL-26MAR",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "close_time": "2030-03-26T00:00:00Z",
+                    "yes_bid": 41,
+                    "yes_ask": 46,
+                    "last_price": 44,
+                },
+                {
+                    "ticker": "KXTOPMODEL-26MAR-GPT5A",
+                    "event_ticker": "KXTOPMODEL-26MAR",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "close_time": "2030-03-26T00:00:00Z",
+                    "yes_bid": 41,
+                    "yes_ask": 46,
+                    "last_price": 44,
+                },
+            ]
+        },
+        None,
+    )
+
+    first = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
+    strategy._model_ticker_map.clear()
+    second = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
+    assert first == "KXTOPMODEL-26MAR-GPT5A"
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_duplicate_name_parses_event_ticker_yy_suffix_without_close_time() -> None:
+    cfg = LeaderboardAlphaConfig(
+        target_series=["KXTOPMODEL"],
+        mapping_event_selection="nearest_expiration",
+    )
+    strategy = LeaderboardAlphaStrategy(config=cfg)
+    await strategy.initialize(
+        {
+            "markets": [
+                {
+                    "ticker": "KXTOPMODEL-26FEB28-GPT5",
+                    "event_ticker": "KXTOPMODEL-26FEB28",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 41,
+                    "yes_ask": 46,
+                    "last_price": 44,
+                },
+                {
+                    "ticker": "KXTOPMODEL-26MAR07-GPT5",
+                    "event_ticker": "KXTOPMODEL-26MAR07",
+                    "subtitle": "GPT-5",
+                    "title": "GPT-5 will be the #1 AI model",
+                    "yes_bid": 42,
+                    "yes_ask": 47,
+                    "last_price": 45,
+                },
+            ]
+        },
+        None,
+    )
+
+    resolved = strategy._resolve_ticker("GPT-5", series="KXTOPMODEL")
+    assert resolved == "KXTOPMODEL-26FEB28-GPT5"

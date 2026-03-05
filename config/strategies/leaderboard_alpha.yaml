@@ -14,13 +14,18 @@ leaderboard_alpha:
     - KXLLM1
   mapping_validation_top_n: 20
 
-  # Manual ticker overrides: Arena name → Kalshi ticker.
-  # Use these when fuzzy matching can't bridge the gap (e.g. org name vs
-  # product name).  The startup mapping report prints copy-paste YAML for
-  # any unresolved entries.
-  model_overrides: {}
+  # Manual ticker overrides: Arena name → Kalshi ticker (checked before
+  # fuzzy matching).  The startup mapping report prints copy-paste YAML
+  # for any unresolved entries.
+  model_ticker_overrides: {}
   #   "grok-4.1": "KXTOPMODEL-26MAR31-GROK"
 
-  org_overrides: {}
+  org_ticker_overrides: {}
   #   "xAI": "KXLLM1-26MAR07-XAI"
   #   "Google": "KXLLM1-26MAR07-GOOG"
+
+  # Aliases to normalize Arena names before matching
+  model_aliases: {}
+  #   "GPT5": "GPT-5"
+  org_aliases: {}
+  #   "Google DeepMind": "Google"

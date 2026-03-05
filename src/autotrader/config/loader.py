@@ -63,6 +63,18 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _normalize_leaderboard_alpha_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize leaderboard-alpha mapping fields loaded from YAML/env."""
+    la = data.get("leaderboard_alpha")
+    if not isinstance(la, dict):
+        return data
+
+    for key in ("model_ticker_overrides", "org_ticker_overrides", "model_aliases", "org_aliases"):
+        if la.get(key) is None:
+            la[key] = {}
+    return data
+
+
 def load_config(
     config_dir: Path | str = "config",
     execution_mode: str | None = None,
@@ -119,9 +131,13 @@ def load_config(
         for yaml_file in sorted(signals_dir.glob("*.yaml")):
             signal_data = _load_yaml(yaml_file)
             stem = yaml_file.stem.replace("-", "_")
-            data = _deep_merge(data, {stem: signal_data})
+            if stem in signal_data:
+                data = _deep_merge(data, {stem: signal_data[stem]})
+            else:
+                data = _deep_merge(data, {stem: signal_data})
 
     # Layer 6: env var overrides
     data = _apply_env_overrides(data)
+    data = _normalize_leaderboard_alpha_config(data)
 
     return AppConfig.from_dict(data)

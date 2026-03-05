@@ -62,8 +62,18 @@ class RiskStrategyConfig(BaseModel):
 
     max_position_per_contract: float = 100.00
     max_position_per_event: float = 250.00
+    event_exposure_mode: str = "gross"
     max_strategy_loss: float = 200.00
     min_edge_multiplier: float = 2.5
+
+    @field_validator("event_exposure_mode")
+    @classmethod
+    def validate_event_exposure_mode(cls, v: str) -> str:
+        valid = {"gross", "net"}
+        lower = v.lower()
+        if lower not in valid:
+            raise ValueError(f"Invalid event_exposure_mode: {v}. Must be one of {valid}")
+        return lower
 
 
 class RiskConfig(BaseModel):
@@ -86,13 +96,25 @@ class LeaderboardAlphaConfig(BaseModel):
     max_position_per_event: float = 250.00
     preliminary_model_discount: float = Field(default=0.3, ge=0.0, le=1.0)
     fuzzy_match_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    model_ticker_overrides: dict[str, str] = Field(default_factory=dict)
+    org_ticker_overrides: dict[str, str] = Field(default_factory=dict)
+    model_aliases: dict[str, str] = Field(default_factory=dict)
+    org_aliases: dict[str, str] = Field(default_factory=dict)
+    preferred_event_tickers: list[str] = Field(default_factory=list)
+    mapping_event_selection: str = "nearest_expiration"
     mapping_validation_top_n: int = Field(default=20, ge=1)
     target_series: list[str] = Field(default_factory=lambda: ["KXTOPMODEL", "KXLLM1"])
     mispricing_detection_enabled: bool = True
     mispricing_min_edge_cents: int = 5
     mispricing_cooldown_seconds: int = 300
-    model_overrides: dict[str, str] = Field(default_factory=dict)
-    org_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("mapping_event_selection")
+    @classmethod
+    def validate_mapping_event_selection(cls, v: str) -> str:
+        valid = {"nearest_expiration", "any"}
+        if v not in valid:
+            raise ValueError(f"Invalid mapping_event_selection: {v}. Must be one of {valid}")
+        return v
 
 
 class DiscordConfig(BaseModel):

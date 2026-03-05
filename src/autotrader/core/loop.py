@@ -1003,6 +1003,7 @@ class TradingLoop:
                             ticker=ticker,
                             event_ticker=self._resolve_event_ticker(ticker),
                             quantity=contract.position,
+                            strategy=strat.name,
                             avg_cost_cents=float(contract.last_price or contract.yes_ask),
                         )
                     )

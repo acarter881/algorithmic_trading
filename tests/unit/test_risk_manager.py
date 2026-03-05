@@ -21,14 +21,28 @@ def _config(
     max_daily_loss_pct: float = 0.05,
     kill_switch: bool = False,
     strategy_limits: dict[str, RiskStrategyConfig] | None = None,
+    event_exposure_mode: str = "gross",
 ) -> RiskConfig:
+    limits = (
+        strategy_limits
+        if strategy_limits is not None
+        else {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=100,
+                max_position_per_event=250,
+                event_exposure_mode=event_exposure_mode,
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
+    )
     return RiskConfig(
         global_config=RiskGlobalConfig(
             max_portfolio_exposure_pct=max_portfolio_exposure_pct,
             max_daily_loss_pct=max_daily_loss_pct,
             kill_switch_enabled=kill_switch,
         ),
-        per_strategy=strategy_limits or {},
+        per_strategy=limits,
     )
 
 
@@ -36,6 +50,7 @@ DEFAULT_STRATEGY_LIMITS = {
     "leaderboard_alpha": RiskStrategyConfig(
         max_position_per_contract=100,
         max_position_per_event=250,
+        event_exposure_mode="gross",
         max_strategy_loss=200,
         min_edge_multiplier=2.5,
     )
@@ -317,19 +332,71 @@ class TestPositionPerEvent:
         decision = rm.evaluate(order)
         assert decision.approved
 
-    def test_mixed_yes_no_flows_respect_event_limit(self) -> None:
+    def test_mixed_yes_no_positions_enforced_in_gross_mode(self) -> None:
         positions = [
-            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=90),
-            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=100),
-            PositionInfo(ticker="KXTOPMODEL-CLAUDE5", event_ticker="KXTOPMODEL-EV1", quantity=60),
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=95),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=-95),
+            PositionInfo(ticker="KXTOPMODEL-CLAUDE5", event_ticker="KXTOPMODEL-EV1", quantity=55),
         ]
         rm = _manager(portfolio=_portfolio(positions=positions))
 
-        reducing_order = _order(ticker="KXTOPMODEL-GPT5", side="no", quantity=15)
-        assert rm.evaluate(reducing_order).approved
+        # Event net is only 55, but gross is 245. Any increase should be blocked in gross mode.
+        increasing_order = _order(ticker="KXTOPMODEL-CLAUDE5", side="yes", quantity=6)
+        decision = rm.evaluate(increasing_order)
 
-        increasing_order = _order(ticker="KXTOPMODEL-GPT5", side="yes", quantity=1)
-        assert not rm.evaluate(increasing_order).approved
+        assert not decision.approved
+        assert any("projected_gross=251" in reason for reason in decision.rejection_reasons)
+
+    def test_mixed_yes_no_positions_can_use_legacy_net_mode(self) -> None:
+        positions = [
+            PositionInfo(ticker="KXTOPMODEL-GPT5", event_ticker="KXTOPMODEL-EV1", quantity=95),
+            PositionInfo(ticker="KXTOPMODEL-GEMINI3", event_ticker="KXTOPMODEL-EV1", quantity=-95),
+            PositionInfo(ticker="KXTOPMODEL-CLAUDE5", event_ticker="KXTOPMODEL-EV1", quantity=55),
+        ]
+        net_limits = {
+            "leaderboard_alpha": RiskStrategyConfig(
+                max_position_per_contract=100,
+                max_position_per_event=250,
+                event_exposure_mode="net",
+                max_strategy_loss=200,
+                min_edge_multiplier=2.5,
+            )
+        }
+        rm = _manager(cfg=_config(strategy_limits=net_limits), portfolio=_portfolio(positions=positions))
+
+        # In net mode event exposure is 55 + 6 = 61, so this order remains allowed.
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", side="yes", quantity=6))
+        assert decision.approved
+
+    def test_gross_mode_uses_strategy_leg_projection_for_same_ticker(self) -> None:
+        positions = [
+            PositionInfo(
+                ticker="KXTOPMODEL-CLAUDE5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=95,
+                strategy="leaderboard_alpha",
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-CLAUDE5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=-95,
+                strategy="other_strategy",
+            ),
+            PositionInfo(
+                ticker="KXTOPMODEL-GPT5",
+                event_ticker="KXTOPMODEL-EV1",
+                quantity=55,
+                strategy="leaderboard_alpha",
+            ),
+        ]
+        rm = _manager(portfolio=_portfolio(positions=positions))
+
+        decision = rm.evaluate(_order(ticker="KXTOPMODEL-CLAUDE5", side="yes", quantity=6))
+
+        # Current event gross: 95 + 95 + 55 = 245.
+        # The order applies to leaderboard_alpha's CLAUDE5 leg only: abs(95) -> abs(101), so projected=251.
+        assert not decision.approved
+        assert any("projected_gross=251" in reason for reason in decision.rejection_reasons)
 
 
 # ── Daily Loss ───────────────────────────────────────────────────────────

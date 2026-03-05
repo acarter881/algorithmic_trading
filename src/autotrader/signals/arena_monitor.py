@@ -471,6 +471,7 @@ class ArenaMonitor(SignalSource):
                     "ci_upper": e.ci_upper,
                     "votes": e.votes,
                     "is_preliminary": e.is_preliminary,
+                    "release_date": e.release_date,
                 }
                 for e in snapshot.entries
             ],

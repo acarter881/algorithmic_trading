@@ -13,6 +13,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -21,7 +22,7 @@ from autotrader.signals.arena_types import LeaderboardEntry, PairwiseAggregate
 from autotrader.signals.settlement import resolve_top_model, resolve_top_org
 from autotrader.strategies.base import OrderUrgency, ProposedOrder, Strategy
 from autotrader.utils.fees import FeeCalculator
-from autotrader.utils.matching import fuzzy_match, normalize_org_name
+from autotrader.utils.matching import normalize_model_name, normalize_org_name
 
 if TYPE_CHECKING:
     from autotrader.config.models import LeaderboardAlphaConfig
@@ -77,6 +78,8 @@ class ContractView:
     ticker: str
     model_name: str  # Name extracted from Kalshi contract title/subtitle
     series: str = ""
+    event_ticker: str = ""
+    close_time: str = ""
     yes_bid: int = 0
     yes_ask: int = 0
     last_price: int = 0
@@ -181,6 +184,8 @@ class LeaderboardAlphaStrategy(Strategy):
                     ticker=ticker,
                     model_name=model_name,
                     series=self._ticker_series(ticker),
+                    event_ticker=event_ticker,
+                    close_time=m.get("close_time", ""),
                     yes_bid=m.get("yes_bid", 0),
                     yes_ask=m.get("yes_ask", 0),
                     last_price=m.get("last_price", 0),
@@ -323,7 +328,6 @@ class LeaderboardAlphaStrategy(Strategy):
         if pairwise:
             self._pairwise.update(pairwise)
         self._rebuild_org_rankings()
-        self._apply_config_overrides()
 
         # Eagerly resolve tickers for competitive models.
         # Sort by rank_ub and take the top N rather than filtering by a
@@ -486,7 +490,7 @@ class LeaderboardAlphaStrategy(Strategy):
         if unmapped_models:
             # Find best-guess ticker for each unmapped model
             lines.append("")
-            lines.append("  model_overrides:")
+            lines.append("  model_ticker_overrides:")
             for m in unmapped_models:
                 guess = self._best_ticker_guess(m["model"], "KXTOPMODEL")
                 comment = f"  # rank_ub={m['rank_ub']}, best guess"
@@ -497,7 +501,7 @@ class LeaderboardAlphaStrategy(Strategy):
 
         if unmapped_orgs:
             lines.append("")
-            lines.append("  org_overrides:")
+            lines.append("  org_ticker_overrides:")
             for o in unmapped_orgs:
                 guess = self._best_ticker_guess(o["org"], "KXLLM1")
                 comment = "  # best guess"
@@ -1019,53 +1023,68 @@ class LeaderboardAlphaStrategy(Strategy):
         )
         self._rebuild_org_rankings()
 
-    def _apply_config_overrides(self) -> None:
-        """Pre-populate ticker maps from config overrides.
-
-        Called once during ``seed_rankings`` so that manual overrides take
-        effect before any fuzzy-matching runs.  Unknown tickers (not
-        present in loaded contracts) are logged and skipped.
-        """
-        known = set(self._ticker_model_names)
-        for arena_name, ticker in self._config.model_overrides.items():
-            if ticker not in known:
-                logger.warning(
-                    "model_override_unknown_ticker",
-                    model=arena_name,
-                    ticker=ticker,
-                    known_ticker_count=len(known),
-                )
-                continue
-            self._model_ticker_map[arena_name] = ticker
-            logger.info("model_override_applied", model=arena_name, ticker=ticker)
-        for arena_name, ticker in self._config.org_overrides.items():
-            if ticker not in known:
-                logger.warning(
-                    "org_override_unknown_ticker",
-                    org=arena_name,
-                    ticker=ticker,
-                    known_ticker_count=len(known),
-                )
-                continue
-            self._org_ticker_map[arena_name] = ticker
-            logger.info("org_override_applied", org=arena_name, ticker=ticker)
-
     def _resolve_ticker(self, model_name: str, series: str | None = None) -> str | None:
-        """Resolve an Arena name to a Kalshi ticker via fuzzy matching."""
+        """Resolve an Arena name to a Kalshi ticker using deterministic ranking."""
         if not model_name:
             return None
+
+        alias_map = self._config.org_aliases if series == "KXLLM1" else self._config.model_aliases
+        resolved_name = alias_map.get(model_name, model_name)
+
+        if series == "KXLLM1":
+            override_ticker = self._config.org_ticker_overrides.get(
+                model_name
+            ) or self._config.org_ticker_overrides.get(resolved_name)
+        else:
+            override_ticker = self._config.model_ticker_overrides.get(
+                model_name
+            ) or self._config.model_ticker_overrides.get(resolved_name)
+
+        if override_ticker:
+            if override_ticker in self._ticker_model_names and (
+                series is None or self._ticker_series(override_ticker) == series
+            ):
+                cache = (
+                    self._org_ticker_map if self._ticker_series(override_ticker) == "KXLLM1" else self._model_ticker_map
+                )
+                cache[model_name] = override_ticker
+                if resolved_name != model_name:
+                    cache[resolved_name] = override_ticker
+                logger.info(
+                    "resolve_ticker_override",
+                    model=model_name,
+                    resolved_name=resolved_name,
+                    series=series,
+                    ticker=override_ticker,
+                )
+                return override_ticker
+            logger.warning(
+                "resolve_ticker_override_ignored",
+                model=model_name,
+                resolved_name=resolved_name,
+                series=series,
+                ticker=override_ticker,
+            )
 
         if series == "KXLLM1":
             if model_name in self._org_ticker_map:
                 return self._org_ticker_map[model_name]
+            if resolved_name in self._org_ticker_map:
+                return self._org_ticker_map[resolved_name]
         elif series == "KXTOPMODEL":
             if model_name in self._model_ticker_map:
                 return self._model_ticker_map[model_name]
+            if resolved_name in self._model_ticker_map:
+                return self._model_ticker_map[resolved_name]
         else:
             if model_name in self._model_ticker_map:
                 return self._model_ticker_map[model_name]
             if model_name in self._org_ticker_map:
                 return self._org_ticker_map[model_name]
+            if resolved_name in self._model_ticker_map:
+                return self._model_ticker_map[resolved_name]
+            if resolved_name in self._org_ticker_map:
+                return self._org_ticker_map[resolved_name]
 
         if not self._ticker_model_names:
             logger.debug("resolve_ticker_no_contracts", model=model_name, series=series)
@@ -1084,37 +1103,65 @@ class LeaderboardAlphaStrategy(Strategy):
             )
             return None
 
-        candidates = list(scoped.values())
+        candidate_contracts: list[dict[str, str]] = []
+        for ticker, contract_name in scoped.items():
+            contract = self._contracts.get(ticker)
+            event_ticker = self._ticker_event_map.get(ticker, contract.event_ticker if contract else "")
+            candidate_contracts.append(
+                {
+                    "ticker": ticker,
+                    "contract_name": contract_name,
+                    "event_ticker": event_ticker,
+                    "close_time": contract.close_time if contract else "",
+                }
+            )
 
-        # Build list of query variants to try.  For org names (KXLLM1),
-        # also try stripping common suffixes ("Google DeepMind" → "Google")
-        # since Kalshi subtitles often use the shorter company name.
-        queries = [model_name]
+        queries = [resolved_name]
         if series == "KXLLM1":
-            stripped = normalize_org_name(model_name)
-            if stripped != model_name:
+            stripped = normalize_org_name(resolved_name)
+            if stripped != resolved_name and stripped not in queries:
                 queries.append(stripped)
 
-        match = None
-        for q in queries:
-            match = fuzzy_match(
-                q,
-                candidates,
-                threshold=self._config.fuzzy_match_threshold,
+        from thefuzz import fuzz as _fuzz
+
+        ranked: list[tuple[dict[str, str], bool, int, int, float]] = []
+        for candidate in candidate_contracts:
+            normalized_candidate = normalize_model_name(candidate["contract_name"])
+            best_exact = False
+            best_fuzzy = 0.0
+            for query in queries:
+                normalized_query = normalize_model_name(query)
+                is_exact = normalized_query == normalized_candidate
+                score = _fuzz.token_sort_ratio(normalized_query, normalized_candidate) / 100.0
+                if is_exact and not best_exact:
+                    best_exact = True
+                    best_fuzzy = score
+                elif not best_exact and score > best_fuzzy:
+                    best_fuzzy = score
+
+            if not best_exact and best_fuzzy < self._config.fuzzy_match_threshold:
+                continue
+
+            ranked.append(
+                (
+                    candidate,
+                    best_exact,
+                    self._preferred_event_rank(candidate["event_ticker"]),
+                    self._expiration_distance_seconds(candidate["event_ticker"], candidate["close_time"]),
+                    best_fuzzy,
+                )
             )
-            if match is not None:
-                break
 
-        if match is None:
-            # Log the best score even when below threshold, so operators
-            # can see near-misses and add overrides.
-            from thefuzz import fuzz as _fuzz
-
-            from autotrader.utils.matching import normalize_model_name
-
+        if not ranked:
             normalized = normalize_model_name(model_name)
             scored = sorted(
-                ((c, _fuzz.token_sort_ratio(normalized, normalize_model_name(c)) / 100.0) for c in candidates),
+                (
+                    (
+                        c["contract_name"],
+                        _fuzz.token_sort_ratio(normalized, normalize_model_name(c["contract_name"])) / 100.0,
+                    )
+                    for c in candidate_contracts
+                ),
                 key=lambda x: x[1],
                 reverse=True,
             )
@@ -1128,19 +1175,95 @@ class LeaderboardAlphaStrategy(Strategy):
             )
             return None
 
-        for ticker, name in scoped.items():
-            if name == match.matched:
-                cache = self._org_ticker_map if self._ticker_series(ticker) == "KXLLM1" else self._model_ticker_map
-                cache[model_name] = ticker
-                logger.info(
-                    "model_ticker_mapped",
-                    model=model_name,
-                    ticker=ticker,
-                    series=series,
-                    score=match.score,
-                )
-                return ticker
-        return None
+        ranked.sort(
+            key=lambda row: (
+                0 if row[1] else 1,
+                row[2],
+                row[3],
+                -row[4],
+                row[0]["ticker"],
+            )
+        )
+        best = ranked[0]
+        ticker = best[0]["ticker"]
+
+        if len(ranked) > 1:
+            logger.info(
+                "resolve_ticker_ambiguous_candidates",
+                model=model_name,
+                series=series,
+                selected_ticker=ticker,
+                selected_event_ticker=best[0]["event_ticker"],
+                candidates=[
+                    {
+                        "ticker": row[0]["ticker"],
+                        "contract_name": row[0]["contract_name"],
+                        "event_ticker": row[0]["event_ticker"],
+                        "close_time": row[0]["close_time"],
+                        "exact_name_match": row[1],
+                        "fuzzy_score": round(row[4], 3),
+                        "preferred_event_rank": row[2],
+                        "expiration_distance_seconds": row[3],
+                    }
+                    for row in ranked
+                ],
+            )
+
+        cache = self._org_ticker_map if self._ticker_series(ticker) == "KXLLM1" else self._model_ticker_map
+        cache[model_name] = ticker
+        logger.info(
+            "model_ticker_mapped",
+            model=model_name,
+            ticker=ticker,
+            series=series,
+            score=round(best[4], 3),
+            exact_name_match=best[1],
+            event_ticker=best[0]["event_ticker"],
+        )
+        return ticker
+
+    def _preferred_event_rank(self, event_ticker: str) -> int:
+        preferred = self._config.preferred_event_tickers
+        if event_ticker in preferred:
+            return preferred.index(event_ticker)
+        return len(preferred)
+
+    def _expiration_distance_seconds(self, event_ticker: str, close_time: str) -> int:
+        if self._config.mapping_event_selection != "nearest_expiration":
+            return 0
+        now = datetime.now(UTC)
+        event_dt = self._event_datetime(event_ticker, close_time)
+        if event_dt is None:
+            return 10**12
+        return abs(int((event_dt - now).total_seconds()))
+
+    def _event_datetime(self, event_ticker: str, close_time: str) -> datetime | None:
+        if close_time:
+            try:
+                return datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        match = re.search(r"-(\d{2})([A-Z]{3})(\d{2})?(?:$|-)", event_ticker or "")
+        if not match:
+            return None
+
+        day = int(match.group(1))
+        month = match.group(2)
+        year_suffix = match.group(3)
+        year = 2000 + int(year_suffix) if year_suffix else datetime.now(UTC).year
+        try:
+            parsed = datetime.strptime(f"{day:02d}{month}{year}", "%d%b%Y").replace(tzinfo=UTC)
+        except ValueError:
+            return None
+        if year_suffix:
+            return parsed
+        if parsed < datetime.now(UTC):
+            try:
+                return parsed.replace(year=year + 1)
+            except ValueError:
+                return parsed
+        return parsed
 
     def _rebuild_org_rankings(self) -> None:
         """Build org-level standings from tracked model-level rankings."""

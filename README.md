@@ -38,6 +38,7 @@ Winner selection is implemented in `src/autotrader/signals/settlement.py::resolv
 Notes:
 - Invalid/non-positive `rank_ub` values are treated as very large (sorted to the bottom).
 - Missing `release_date` values are treated as very late dates (sorted to the bottom within ties).
+- Persisted `leaderboard_snapshots.snapshot_data.entries` include tie-break/audit fields (`votes`, `release_date`) for settlement replay and verification.
 
 This exact winner logic directly affects:
 - `new_leader` generation in `src/autotrader/signals/arena_monitor.py` (leader-change detection uses `resolve_top_model` on previous vs current snapshots).
@@ -75,6 +76,31 @@ AUTOTRADER__KALSHI__EXECUTION_MODE=paper
 ```bash
 # 3. Build and start (paper trading)
 docker compose up -d --build
+```
+
+### Development Loop (Docker-only)
+
+To iterate faster (lint, preflight, and fast tests) use:
+
+```bash
+./scripts/docker_dev_loop.sh --iterations 3
+```
+
+Defaults:
+- runs Docker image build once
+- runs `ruff format --check` + `ruff check`
+- runs `preflight` (including a target-series market-availability check)
+- runs fast tests (`pytest -m "not integration"`)
+- writes logs to `reports/docker-dev-loop-<timestamp>.log`
+
+Optional flags:
+
+```bash
+# Include full test suite after fast tests
+./scripts/docker_dev_loop.sh --iterations 1 --full-tests
+
+# Use alternate config directory
+./scripts/docker_dev_loop.sh --config-dir config --iterations 2
 ```
 
 ### Monitoring
@@ -120,7 +146,7 @@ Before running 24/7, walk through these steps once:
    ```bash
    docker compose run --rm autotrader preflight --config-dir config
    ```
-   This checks: config validity, DB init, Kalshi API authentication, Arena leaderboard reachability, and Discord webhook (if configured). All checks should pass before continuing.
+   This checks: config validity, DB init, Kalshi API authentication, Arena leaderboard reachability, required target-series market availability, and Discord webhook (if configured). All checks should pass before continuing.
 4. **Start the service:**
    ```bash
    docker compose up -d --build
