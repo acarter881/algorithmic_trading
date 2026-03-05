@@ -86,6 +86,10 @@ class LeaderboardAlphaConfig(BaseModel):
     max_position_per_event: float = 250.00
     preliminary_model_discount: float = Field(default=0.3, ge=0.0, le=1.0)
     fuzzy_match_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    model_ticker_overrides: dict[str, str] = Field(default_factory=dict)
+    org_ticker_overrides: dict[str, str] = Field(default_factory=dict)
+    model_aliases: dict[str, str] = Field(default_factory=dict)
+    org_aliases: dict[str, str] = Field(default_factory=dict)
     preferred_event_tickers: list[str] = Field(default_factory=list)
     mapping_event_selection: str = "nearest_expiration"
     mapping_validation_top_n: int = Field(default=20, ge=1)

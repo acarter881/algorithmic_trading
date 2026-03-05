@@ -384,6 +384,8 @@ class LeaderboardAlphaStrategy(Strategy):
         unmapped_orgs: list[dict[str, Any]] = []
         seen_orgs: set[str] = set()
 
+        self._validate_override_tickers()
+
         for entry in ranked:
             # --- KXTOPMODEL: model → contract ---
             # Attempt resolution (returns cached result if already resolved)
@@ -442,6 +444,48 @@ class LeaderboardAlphaStrategy(Strategy):
                 unmapped_orgs=[o["org"] for o in unmapped_orgs],
             )
         return report
+
+    def _validate_override_tickers(self) -> None:
+        """Warn when configured overrides target unknown or mismatched tickers."""
+        if not self._contracts:
+            return
+
+        known_tickers = set(self._contracts)
+        for arena_name, ticker in self._config.model_ticker_overrides.items():
+            if ticker not in known_tickers:
+                logger.warning(
+                    "model_override_unknown_ticker",
+                    model=arena_name,
+                    ticker=ticker,
+                    known_ticker_count=len(known_tickers),
+                )
+                continue
+            if self._ticker_series(ticker) != "KXTOPMODEL":
+                logger.warning(
+                    "model_override_wrong_series",
+                    model=arena_name,
+                    ticker=ticker,
+                    expected_series="KXTOPMODEL",
+                    actual_series=self._ticker_series(ticker),
+                )
+
+        for arena_org, ticker in self._config.org_ticker_overrides.items():
+            if ticker not in known_tickers:
+                logger.warning(
+                    "org_override_unknown_ticker",
+                    org=arena_org,
+                    ticker=ticker,
+                    known_ticker_count=len(known_tickers),
+                )
+                continue
+            if self._ticker_series(ticker) != "KXLLM1":
+                logger.warning(
+                    "org_override_wrong_series",
+                    org=arena_org,
+                    ticker=ticker,
+                    expected_series="KXLLM1",
+                    actual_series=self._ticker_series(ticker),
+                )
 
     # ── Fair value ────────────────────────────────────────────────────
 
@@ -911,17 +955,63 @@ class LeaderboardAlphaStrategy(Strategy):
         if not model_name:
             return None
 
+        alias_map = self._config.org_aliases if series == "KXLLM1" else self._config.model_aliases
+        resolved_name = alias_map.get(model_name, model_name)
+
+        if series == "KXLLM1":
+            override_ticker = self._config.org_ticker_overrides.get(
+                model_name
+            ) or self._config.org_ticker_overrides.get(resolved_name)
+        else:
+            override_ticker = self._config.model_ticker_overrides.get(
+                model_name
+            ) or self._config.model_ticker_overrides.get(resolved_name)
+
+        if override_ticker:
+            if override_ticker in self._ticker_model_names and (
+                series is None or self._ticker_series(override_ticker) == series
+            ):
+                cache = (
+                    self._org_ticker_map if self._ticker_series(override_ticker) == "KXLLM1" else self._model_ticker_map
+                )
+                cache[model_name] = override_ticker
+                if resolved_name != model_name:
+                    cache[resolved_name] = override_ticker
+                logger.info(
+                    "resolve_ticker_override",
+                    model=model_name,
+                    resolved_name=resolved_name,
+                    series=series,
+                    ticker=override_ticker,
+                )
+                return override_ticker
+            logger.warning(
+                "resolve_ticker_override_ignored",
+                model=model_name,
+                resolved_name=resolved_name,
+                series=series,
+                ticker=override_ticker,
+            )
+
         if series == "KXLLM1":
             if model_name in self._org_ticker_map:
                 return self._org_ticker_map[model_name]
+            if resolved_name in self._org_ticker_map:
+                return self._org_ticker_map[resolved_name]
         elif series == "KXTOPMODEL":
             if model_name in self._model_ticker_map:
                 return self._model_ticker_map[model_name]
+            if resolved_name in self._model_ticker_map:
+                return self._model_ticker_map[resolved_name]
         else:
             if model_name in self._model_ticker_map:
                 return self._model_ticker_map[model_name]
             if model_name in self._org_ticker_map:
                 return self._org_ticker_map[model_name]
+            if resolved_name in self._model_ticker_map:
+                return self._model_ticker_map[resolved_name]
+            if resolved_name in self._org_ticker_map:
+                return self._org_ticker_map[resolved_name]
 
         if not self._ticker_model_names:
             logger.debug("resolve_ticker_no_contracts", model=model_name, series=series)
@@ -953,10 +1043,10 @@ class LeaderboardAlphaStrategy(Strategy):
                 }
             )
 
-        queries = [model_name]
+        queries = [resolved_name]
         if series == "KXLLM1":
-            stripped = normalize_org_name(model_name)
-            if stripped != model_name:
+            stripped = normalize_org_name(resolved_name)
+            if stripped != resolved_name and stripped not in queries:
                 queries.append(stripped)
 
         from thefuzz import fuzz as _fuzz
