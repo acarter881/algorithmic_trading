@@ -62,8 +62,18 @@ class RiskStrategyConfig(BaseModel):
 
     max_position_per_contract: float = 100.00
     max_position_per_event: float = 250.00
+    event_exposure_mode: str = "gross"
     max_strategy_loss: float = 200.00
     min_edge_multiplier: float = 2.5
+
+    @field_validator("event_exposure_mode")
+    @classmethod
+    def validate_event_exposure_mode(cls, v: str) -> str:
+        valid = {"gross", "net"}
+        lower = v.lower()
+        if lower not in valid:
+            raise ValueError(f"Invalid event_exposure_mode: {v}. Must be one of {valid}")
+        return lower
 
 
 class RiskConfig(BaseModel):
