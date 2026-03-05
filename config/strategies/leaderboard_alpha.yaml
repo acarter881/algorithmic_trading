@@ -13,3 +13,14 @@ leaderboard_alpha:
     - KXTOPMODEL
     - KXLLM1
   mapping_validation_top_n: 20
+
+  # Manual override layer (checked before fuzzy matching)
+  model_ticker_overrides:
+    GPT-5: KXTOPMODEL-GPT5
+  org_ticker_overrides:
+    OpenAI: KXLLM1-OPENAI
+  # Optional aliases to normalize incoming Arena names
+  model_aliases:
+    GPT5: GPT-5
+  org_aliases:
+    Google DeepMind: Google

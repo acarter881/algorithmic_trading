@@ -185,12 +185,35 @@ class TestLoadConfig:
                 {
                     "leaderboard_alpha": {
                         "min_edge_after_fees_cents": 5,
+                        "model_ticker_overrides": {"GPT-5": "KXTOPMODEL-GPT5"},
                     }
                 }
             )
         )
         config = load_config(config_dir=tmp_path)
         assert config.leaderboard_alpha.min_edge_after_fees_cents == 5
+        assert config.leaderboard_alpha.model_ticker_overrides["GPT-5"] == "KXTOPMODEL-GPT5"
+
+
+    def test_strategy_yaml_null_override_maps(self, tmp_path: Path) -> None:
+        strategies_dir = tmp_path / "strategies"
+        strategies_dir.mkdir()
+        la = strategies_dir / "leaderboard_alpha.yaml"
+        la.write_text(
+            yaml.dump(
+                {
+                    "leaderboard_alpha": {
+                        "model_ticker_overrides": None,
+                        "org_ticker_overrides": None,
+                    }
+                }
+            )
+        )
+
+        config = load_config(config_dir=tmp_path)
+
+        assert config.leaderboard_alpha.model_ticker_overrides == {}
+        assert config.leaderboard_alpha.org_ticker_overrides == {}
 
     def test_signal_source_yaml_with_top_level_key(self, tmp_path: Path) -> None:
         signal_sources_dir = tmp_path / "signal_sources"

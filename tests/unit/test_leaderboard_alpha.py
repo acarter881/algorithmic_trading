@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from unittest.mock import patch
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1494,6 +1495,65 @@ class TestSeedRankings:
         # Org names with suffixes should match the shorter Kalshi subtitles
         assert s._org_ticker_map.get("Google DeepMind") == "KXLLM1-GOOGLE"
         assert s._org_ticker_map.get("Meta AI") == "KXLLM1-META"
+
+
+class TestTickerOverrides:
+    async def test_model_override_takes_precedence_over_fuzzy_match(self) -> None:
+        cfg = _config(
+            model_ticker_overrides={"GPT-5": "KXTOPMODEL-GEMINI3"},
+            target_series=["KXTOPMODEL"],
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+
+        ticker = s._resolve_ticker("GPT-5", series="KXTOPMODEL")
+
+        assert ticker == "KXTOPMODEL-GEMINI3"
+
+    async def test_org_override_takes_precedence_over_fuzzy_match(self, org_market_data: dict[str, object]) -> None:
+        cfg = _config(
+            target_series=["KXTOPMODEL", "KXLLM1"],
+            org_ticker_overrides={"Google DeepMind": "KXLLM1-OPENAI"},
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(org_market_data, None)
+
+        ticker = s._resolve_ticker("Google DeepMind", series="KXLLM1")
+
+        assert ticker == "KXLLM1-OPENAI"
+
+    async def test_validate_mappings_warns_on_unknown_override_ticker(self) -> None:
+        cfg = _config(
+            target_series=["KXTOPMODEL"],
+            model_ticker_overrides={"GPT-5": "KXTOPMODEL-UNKNOWN"},
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+        s.seed_rankings([_entry(name="GPT-5", rank_ub=1)])
+
+        with patch("autotrader.strategies.leaderboard_alpha.logger.warning") as warn:
+            s.validate_mappings()
+
+        warn.assert_any_call(
+            "model_override_unknown_ticker",
+            model="GPT-5",
+            ticker="KXTOPMODEL-UNKNOWN",
+            known_ticker_count=len(s._contracts),
+        )
+
+    async def test_alias_supports_override_lookup(self) -> None:
+        cfg = _config(
+            target_series=["KXTOPMODEL"],
+            model_aliases={"GPT5": "GPT-5"},
+            model_ticker_overrides={"GPT-5": "KXTOPMODEL-GPT5"},
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(MARKET_DATA, None)
+
+        ticker = s._resolve_ticker("GPT5", series="KXTOPMODEL")
+
+        assert ticker == "KXTOPMODEL-GPT5"
+
 
 
 # ── Mispricing detection ───────────────────────────────────────────────
