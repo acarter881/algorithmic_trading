@@ -493,10 +493,10 @@ class LeaderboardAlphaStrategy(Strategy):
         # any ticker with that suffix.  This lets us annotate "sibling"
         # contracts in other events (same model, different date).
         suffix_to_arena: dict[str, str] = {}
-        for ticker, arena_name in ticker_to_arena.items():
-            parts = ticker.split("-", 2)  # e.g. KXTOPMODEL-26MAR31-GEMIP
+        for tk, an in ticker_to_arena.items():
+            parts = tk.split("-", 2)  # e.g. KXTOPMODEL-26MAR31-GEMIP
             if len(parts) == 3:
-                suffix_to_arena[f"{parts[0]}-{parts[2]}"] = arena_name
+                suffix_to_arena[f"{parts[0]}-{parts[2]}"] = an
 
         total_contracts = len(self._ticker_model_names)
         total_mapped = len(ticker_to_arena)
