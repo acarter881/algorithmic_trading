@@ -1041,12 +1041,11 @@ class LeaderboardAlphaStrategy(Strategy):
             ) or self._config.model_ticker_overrides.get(resolved_name)
 
         if override_ticker:
-            if override_ticker in self._ticker_model_names and (
-                series is None or self._ticker_series(override_ticker) == series
-            ):
-                cache = (
-                    self._org_ticker_map if self._ticker_series(override_ticker) == "KXLLM1" else self._model_ticker_map
-                )
+            ticker_known = override_ticker in self._ticker_model_names
+            ticker_series = self._ticker_series(override_ticker) if ticker_known else ""
+            series_ok = series is None or ticker_series == series
+            if ticker_known and series_ok:
+                cache = self._org_ticker_map if ticker_series == "KXLLM1" else self._model_ticker_map
                 cache[model_name] = override_ticker
                 if resolved_name != model_name:
                     cache[resolved_name] = override_ticker
@@ -1058,12 +1057,18 @@ class LeaderboardAlphaStrategy(Strategy):
                     ticker=override_ticker,
                 )
                 return override_ticker
+            reason = (
+                "ticker not in loaded contracts"
+                if not ticker_known
+                else f"series mismatch: override is {ticker_series}, expected {series}"
+            )
             logger.warning(
                 "resolve_ticker_override_ignored",
                 model=model_name,
                 resolved_name=resolved_name,
                 series=series,
                 ticker=override_ticker,
+                reason=reason,
             )
 
         if series == "KXLLM1":

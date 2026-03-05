@@ -1525,7 +1525,7 @@ class TestSeedRankings:
 
     async def test_config_model_overrides_applied(self) -> None:
         """Manual model overrides in config should take effect."""
-        cfg = _config(model_overrides={"UnknownModel": "KXTOPMODEL-GPT5"})
+        cfg = _config(model_ticker_overrides={"UnknownModel": "KXTOPMODEL-GPT5"})
         s = _strategy(cfg=cfg)
         await s.initialize(MARKET_DATA, None)
 
@@ -1538,7 +1538,7 @@ class TestSeedRankings:
         """Manual org overrides in config should take effect."""
         cfg = _config(
             target_series=["KXTOPMODEL", "KXLLM1"],
-            org_overrides={"xAI": "KXLLM1-XAI"},
+            org_ticker_overrides={"xAI": "KXLLM1-XAI"},
         )
         s = _strategy(cfg=cfg)
         market_data = {
@@ -1555,7 +1555,7 @@ class TestSeedRankings:
 
     async def test_config_override_unknown_ticker_ignored(self) -> None:
         """Override pointing to a non-existent ticker should be skipped."""
-        cfg = _config(model_overrides={"GPT-5": "KXTOPMODEL-NONEXISTENT"})
+        cfg = _config(model_ticker_overrides={"GPT-5": "KXTOPMODEL-NONEXISTENT"})
         s = _strategy(cfg=cfg)
         await s.initialize(MARKET_DATA, None)
 
