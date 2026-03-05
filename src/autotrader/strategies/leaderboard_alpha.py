@@ -518,8 +518,8 @@ class LeaderboardAlphaStrategy(Strategy):
             lines.append(f"  {series}:")
             for t in tickers:
                 contract_name = self._ticker_model_names[t]
-                arena_name = ticker_to_arena.get(t)
-                if arena_name:
+                arena_name: str | None = ticker_to_arena.get(t)
+                if arena_name is not None:
                     lines.append(f"    {t:45s} ({contract_name:30s}) <- {arena_name}")
                 else:
                     # Check if a sibling event has this mapped
