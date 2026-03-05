@@ -30,6 +30,27 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("autotrader.strategies.leaderboard_alpha")
 
+# Default mapping from Arena organization names to Kalshi KXLLM1 contract
+# display names (product/brand names).  Kalshi uses product names as subtitles
+# (e.g. "Claude", "Gemini") while the Arena uses company names ("Anthropic",
+# "Google").  Without this, fuzzy matching can never bridge the gap.
+_DEFAULT_ORG_ALIASES: dict[str, str] = {
+    "Anthropic": "Claude",
+    "Google": "Gemini",
+    "OpenAI": "ChatGPT",
+    "xAI": "Grok",
+    "Meta": "LLaMA",
+    "Alibaba": "Qwen",
+    "Baidu": "Ernie",
+    "ByteDance": "Dola",
+    "01.AI": "Yi",
+    "Moonshot AI": "Kimi",
+    "DeepSeek": "DeepSeek",
+    "Mistral AI": "Mistral",
+    "Zhipu AI": "GLM",
+    "Z.ai": "Z.ai",
+}
+
 # Regex patterns for extracting model/org names from Kalshi contract titles.
 # Titles follow patterns like "Claude Opus 4.6 will be the #1 AI model"
 # or "Anthropic will have the #1 AI model".
@@ -488,27 +509,30 @@ class LeaderboardAlphaStrategy(Strategy):
             lines.append("-" * 64)
 
         if unmapped_models:
-            # Find best-guess ticker for each unmapped model
             lines.append("")
             lines.append("  model_ticker_overrides:")
+            lines.append("  # Only add overrides for models that HAVE a Kalshi contract.")
+            lines.append("  # Models not listed on Kalshi cannot be mapped and should be")
+            lines.append("  # left unmapped (the strategy will ignore them).")
             for m in unmapped_models:
-                guess = self._best_ticker_guess(m["model"], "KXTOPMODEL")
-                comment = f"  # rank_ub={m['rank_ub']}, best guess"
+                guess, score = self._best_ticker_guess(m["model"], "KXTOPMODEL")
+                rank_info = f"rank_ub={m['rank_ub']}"
                 if guess:
-                    lines.append(f'    "{m["model"]}": "{guess}"{comment}')
+                    contract_name = self._ticker_model_names.get(guess, "?")
+                    lines.append(f'    # "{m["model"]}": "{guess}"  # {rank_info}, best={contract_name} ({score:.0%})')
                 else:
-                    lines.append(f'    "{m["model"]}": "KXTOPMODEL-???"{comment}')
+                    lines.append(f'    # "{m["model"]}": "KXTOPMODEL-???"  # {rank_info}, no candidates')
 
         if unmapped_orgs:
             lines.append("")
             lines.append("  org_ticker_overrides:")
             for o in unmapped_orgs:
-                guess = self._best_ticker_guess(o["org"], "KXLLM1")
-                comment = "  # best guess"
+                guess, score = self._best_ticker_guess(o["org"], "KXLLM1")
                 if guess:
-                    lines.append(f'    "{o["org"]}": "{guess}"{comment}')
+                    contract_name = self._ticker_model_names.get(guess, "?")
+                    lines.append(f'    # "{o["org"]}": "{guess}"  # best={contract_name} ({score:.0%})')
                 else:
-                    lines.append(f'    "{o["org"]}": "KXLLM1-???"{comment}')
+                    lines.append(f'    # "{o["org"]}": "KXLLM1-???"  # no candidates')
 
         if unmapped_models or unmapped_orgs:
             lines.append("")
@@ -532,21 +556,22 @@ class LeaderboardAlphaStrategy(Strategy):
 
         print("\n".join(lines))
 
-    def _best_ticker_guess(self, name: str, series: str) -> str | None:
-        """Return the best-scoring ticker for *name* even if below threshold."""
+    def _best_ticker_guess(self, name: str, series: str) -> tuple[str | None, float]:
+        """Return (best_ticker, score) for *name* even if below threshold."""
         from thefuzz import fuzz as _fuzz
-
-        from autotrader.utils.matching import normalize_model_name
 
         scoped = {t: n for t, n in self._ticker_model_names.items() if self._ticker_series(t) == series}
         if not scoped:
-            return None
+            return None, 0.0
 
-        # For org names, also try the stripped variant
+        # For org names, also try the product alias and stripped variant
         queries = [name]
         if series == "KXLLM1":
+            product = _DEFAULT_ORG_ALIASES.get(name)
+            if product and product not in queries:
+                queries.append(product)
             stripped = normalize_org_name(name)
-            if stripped != name:
+            if stripped != name and stripped not in queries:
                 queries.append(stripped)
 
         best_ticker = None
@@ -558,7 +583,7 @@ class LeaderboardAlphaStrategy(Strategy):
                 if score > best_score:
                     best_score = score
                     best_ticker = ticker
-        return best_ticker
+        return best_ticker, best_score
 
     # ── Fair value ────────────────────────────────────────────────────
 
@@ -1028,8 +1053,11 @@ class LeaderboardAlphaStrategy(Strategy):
         if not model_name:
             return None
 
-        alias_map = self._config.org_aliases if series == "KXLLM1" else self._config.model_aliases
-        resolved_name = alias_map.get(model_name, model_name)
+        if series == "KXLLM1":
+            # Config aliases override built-in defaults
+            resolved_name = self._config.org_aliases.get(model_name, _DEFAULT_ORG_ALIASES.get(model_name, model_name))
+        else:
+            resolved_name = self._config.model_aliases.get(model_name, model_name)
 
         if series == "KXLLM1":
             override_ticker = self._config.org_ticker_overrides.get(
@@ -1122,10 +1150,16 @@ class LeaderboardAlphaStrategy(Strategy):
             )
 
         queries = [resolved_name]
+        # For orgs, also try the original org name (before alias) and
+        # stripped variants (e.g. "Zhipu AI" → "Zhipu") so we cover both
+        # product-name contracts (real API) and company-name contracts.
         if series == "KXLLM1":
-            stripped = normalize_org_name(resolved_name)
-            if stripped != resolved_name and stripped not in queries:
-                queries.append(stripped)
+            if model_name != resolved_name and model_name not in queries:
+                queries.append(model_name)
+            for base in [resolved_name, model_name]:
+                stripped = normalize_org_name(base)
+                if stripped not in queries:
+                    queries.append(stripped)
 
         from thefuzz import fuzz as _fuzz
 
