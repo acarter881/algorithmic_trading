@@ -13,7 +13,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -1068,7 +1068,7 @@ class LeaderboardAlphaStrategy(Strategy):
     def _expiration_distance_seconds(self, event_ticker: str, close_time: str) -> int:
         if self._config.mapping_event_selection != "nearest_expiration":
             return 0
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         event_dt = self._event_datetime(event_ticker, close_time)
         if event_dt is None:
             return 10**12
@@ -1085,12 +1085,12 @@ class LeaderboardAlphaStrategy(Strategy):
             return None
         day = int(match.group(1))
         month = match.group(2)
-        year = datetime.now(timezone.utc).year
+        year = datetime.now(UTC).year
         try:
-            parsed = datetime.strptime(f"{day:02d}{month}{year}", "%d%b%Y").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(f"{day:02d}{month}{year}", "%d%b%Y").replace(tzinfo=UTC)
         except ValueError:
             return None
-        if parsed < datetime.now(timezone.utc):
+        if parsed < datetime.now(UTC):
             try:
                 return parsed.replace(year=year + 1)
             except ValueError:
