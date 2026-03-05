@@ -1554,6 +1554,18 @@ class TestTickerOverrides:
 
         assert ticker == "KXTOPMODEL-GPT5"
 
+    async def test_org_alias_uses_stripped_resolved_name_for_matching(self, org_market_data: dict[str, object]) -> None:
+        cfg = _config(
+            target_series=["KXTOPMODEL", "KXLLM1"],
+            org_aliases={"Alphabet": "Google DeepMind"},
+        )
+        s = _strategy(cfg=cfg)
+        await s.initialize(org_market_data, None)
+
+        ticker = s._resolve_ticker("Alphabet", series="KXLLM1")
+
+        assert ticker == "KXLLM1-GOOGLE"
+
 
 
 # ── Mispricing detection ───────────────────────────────────────────────

@@ -1043,8 +1043,8 @@ class LeaderboardAlphaStrategy(Strategy):
 
         queries = [resolved_name]
         if series == "KXLLM1":
-            stripped = normalize_org_name(model_name)
-            if stripped != model_name:
+            stripped = normalize_org_name(resolved_name)
+            if stripped != resolved_name and stripped not in queries:
                 queries.append(stripped)
 
         from thefuzz import fuzz as _fuzz
