@@ -472,8 +472,9 @@ class LeaderboardAlphaStrategy(Strategy):
     def _print_mapping_report(self, report: dict[str, Any]) -> None:
         """Print a human-readable mapping report to stdout.
 
-        Includes copy-paste YAML for any unmapped entries so the operator
-        can quickly add manual overrides to the config file.
+        Shows every loaded Kalshi contract with the Arena entry it is mapped
+        to (or why it is not mapped), plus unmapped Arena entries that have no
+        Kalshi contract at all.
         """
         mapped_models = report["mapped_models"]
         unmapped_models = report["unmapped_models"]
@@ -481,96 +482,87 @@ class LeaderboardAlphaStrategy(Strategy):
         unmapped_orgs = report["unmapped_orgs"]
         top_n = report["top_n"]
 
+        # Build reverse map: ticker → arena name
+        ticker_to_arena: dict[str, str] = {}
+        for m in mapped_models:
+            ticker_to_arena[m["ticker"]] = m["model"]
+        for o in mapped_orgs:
+            ticker_to_arena[o["ticker"]] = o["org"]
+
+        # Build a map from contract suffix → set of arena names that map to
+        # any ticker with that suffix.  This lets us annotate "sibling"
+        # contracts in other events (same model, different date).
+        suffix_to_arena: dict[str, str] = {}
+        for ticker, arena_name in ticker_to_arena.items():
+            parts = ticker.split("-", 2)  # e.g. KXTOPMODEL-26MAR31-GEMIP
+            if len(parts) == 3:
+                suffix_to_arena[f"{parts[0]}-{parts[2]}"] = arena_name
+
+        total_contracts = len(self._ticker_model_names)
+        total_mapped = len(ticker_to_arena)
+
         lines = [
             "",
-            "=" * 64,
-            f"  MAPPING REPORT  (top {top_n} Arena entries)",
-            "=" * 64,
-            "",
-            f"  KXTOPMODEL  {len(mapped_models)} mapped, {len(unmapped_models)} unmapped",
-            f"  KXLLM1      {len(mapped_orgs)} mapped, {len(unmapped_orgs)} unmapped",
+            "=" * 72,
+            f"  MAPPING REPORT  (top {top_n} Arena entries, {total_contracts} Kalshi contracts)",
+            "=" * 72,
             "",
         ]
 
-        if mapped_models:
-            lines.append("  Mapped models:")
-            for m in mapped_models:
-                lines.append(f"    {m['model']!r:40s} -> {m['ticker']}")
+        # ── All contracts table ──────────────────────────────────────────
+        for series in ("KXTOPMODEL", "KXLLM1"):
+            tickers = sorted(t for t in self._ticker_model_names if self._ticker_series(t) == series)
+            if not tickers:
+                continue
 
-        if mapped_orgs:
-            lines.append("  Mapped orgs:")
-            for o in mapped_orgs:
-                lines.append(f"    {o['org']!r:40s} -> {o['ticker']}")
+            lines.append(f"  {series}:")
+            for t in tickers:
+                contract_name = self._ticker_model_names[t]
+                arena_name = ticker_to_arena.get(t)
+                if arena_name:
+                    lines.append(f"    {t:45s} ({contract_name:30s}) <- {arena_name}")
+                else:
+                    # Check if a sibling event has this mapped
+                    parts = t.split("-", 2)
+                    suffix_key = f"{parts[0]}-{parts[2]}" if len(parts) == 3 else ""
+                    sibling_arena = suffix_to_arena.get(suffix_key)
+                    if sibling_arena:
+                        lines.append(f"    {t:45s} ({contract_name:30s})    (not traded, mapped via other event)")
+                    else:
+                        lines.append(f"    {t:45s} ({contract_name:30s})    --")
+            lines.append("")
 
-        # Collect already-mapped tickers so we can show what's still available.
-        mapped_tickers: set[str] = {m["ticker"] for m in mapped_models} | {o["ticker"] for o in mapped_orgs}
+        lines.append(f"  {total_mapped} of {total_contracts} contracts actively mapped")
 
+        # ── Unmapped Arena entries ────────────────────────────────────────
         if unmapped_models or unmapped_orgs:
             lines.append("")
-            lines.append("-" * 64)
-            lines.append("  UNMAPPED")
-            lines.append("-" * 64)
+            lines.append("-" * 72)
+            lines.append("  UNMAPPED ARENA ENTRIES (no Kalshi contract matched)")
+            lines.append("-" * 72)
 
         if unmapped_models:
             lines.append("")
-            lines.append("  Arena models not matched (no Kalshi contract auto-resolved):")
+            lines.append("  Models:")
             for m in unmapped_models:
                 lines.append(f"    {m['model']:45s}  (rank_ub={m['rank_ub']})")
 
-            # Show unmapped KXTOPMODEL contracts — these exist on Kalshi
-            # but no Arena entry claimed them.
-            unmapped_model_tickers = sorted(
-                t
-                for t in self._ticker_model_names
-                if self._ticker_series(t) == "KXTOPMODEL" and t not in mapped_tickers
-            )
-            if unmapped_model_tickers:
-                lines.append("")
-                lines.append("  Unmapped KXTOPMODEL contracts on Kalshi:")
-                for t in unmapped_model_tickers:
-                    name = self._ticker_model_names[t]
-                    lines.append(f"    {t:45s} ({name})")
-                lines.append("")
-                lines.append("  If an Arena model should map to one of these, add to")
-                lines.append("  config/strategies/leaderboard_alpha.yaml:")
-                lines.append("  model_ticker_overrides:")
-                lines.append('    # "arena-model-name": "KXTOPMODEL-26MAR07-XXXX"')
-
         if unmapped_orgs:
             lines.append("")
-            lines.append("  Arena orgs not matched:")
+            lines.append("  Orgs:")
             for o in unmapped_orgs:
-                lines.append(f"    {o['org']:45s}")
-
-            unmapped_org_tickers = sorted(
-                t for t in self._ticker_model_names if self._ticker_series(t) == "KXLLM1" and t not in mapped_tickers
-            )
-            if unmapped_org_tickers:
-                lines.append("")
-                lines.append("  Unmapped KXLLM1 contracts on Kalshi:")
-                for t in unmapped_org_tickers:
-                    name = self._ticker_model_names[t]
-                    lines.append(f"    {t:45s} ({name})")
-                lines.append("")
-                lines.append("  If an Arena org should map to one of these, add to")
-                lines.append("  config/strategies/leaderboard_alpha.yaml:")
-                lines.append("  org_ticker_overrides:")
-                lines.append('    # "arena-org-name": "KXLLM1-26MAR07-XXXX"')
+                lines.append(f"    {o['org']}")
 
         if unmapped_models or unmapped_orgs:
             lines.append("")
-            lines.append("  All Kalshi contracts (* = already mapped):")
-            for series in ("KXTOPMODEL", "KXLLM1"):
-                tickers = sorted(t for t in self._ticker_model_names if self._ticker_series(t) == series)
-                if tickers:
-                    lines.append(f"    {series}:")
-                    for t in tickers:
-                        name = self._ticker_model_names[t]
-                        mapped_flag = "*" if t in mapped_tickers else " "
-                        lines.append(f"      {mapped_flag} {t:45s} ({name})")
+            lines.append("  To add manual overrides, edit config/strategies/leaderboard_alpha.yaml:")
+            lines.append("    model_ticker_overrides:")
+            lines.append('      "arena-model-name": "KXTOPMODEL-26MAR07-XXXX"')
+            lines.append("    org_ticker_overrides:")
+            lines.append('      "arena-org-name": "KXLLM1-26MAR07-XXXX"')
 
         lines.append("")
-        lines.append("=" * 64)
+        lines.append("=" * 72)
         lines.append("")
 
         print("\n".join(lines))
