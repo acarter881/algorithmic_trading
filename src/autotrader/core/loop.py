@@ -155,6 +155,7 @@ class TradingLoop:
 
         # Execution engine
         mode = ExecutionMode.PAPER if is_paper_mode else ExecutionMode.LIVE
+        paper_fill_mode = self._config.kalshi.paper_fill_mode
         if mode == ExecutionMode.LIVE:
             live_client = self._api_client
             if live_client is None:
@@ -163,7 +164,15 @@ class TradingLoop:
                 live_client.connect(private_key_pem=private_key_pem)
             self._engine = ExecutionEngine(mode=mode, api_client=live_client, fee_calculator=self._fee_calc)
         else:
-            self._engine = ExecutionEngine(mode=mode, fee_calculator=self._fee_calc)
+            # In paper mode with orderbook fills, provide the market data client
+            # so the engine can fetch live orderbooks for realistic simulation.
+            paper_api = self._market_data_client if paper_fill_mode == "orderbook" else None
+            self._engine = ExecutionEngine(
+                mode=mode,
+                api_client=paper_api,
+                fee_calculator=self._fee_calc,
+                paper_fill_mode=paper_fill_mode,
+            )
 
         # Wire fill callbacks: engine fills → strategy position tracking
         self._engine.on_fill(self._on_fill)

@@ -28,9 +28,19 @@ class KalshiConfig(BaseModel):
     base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     websocket_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     websocket_enabled: bool = False
+    paper_fill_mode: str = "instant"
     request_timeout_seconds: float = 30.0
     max_retries: int = 3
     rate_limit_buffer_pct: float = 0.1
+
+    @field_validator("paper_fill_mode")
+    @classmethod
+    def validate_paper_fill_mode(cls, v: str) -> str:
+        valid = {"instant", "orderbook"}
+        lower = v.lower()
+        if lower not in valid:
+            raise ValueError(f"Invalid paper_fill_mode: {v}. Must be one of {valid}")
+        return lower
 
 
 class ArenaMonitorConfig(BaseModel):
