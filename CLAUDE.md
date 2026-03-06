@@ -13,6 +13,37 @@ Assume all strategy, signal, validation, and execution work in this repo is for 
 
 This codebase is financially sensitive. Default to safety-first behavior at all times.
 
+## Market Context
+
+As of March 2026, the two target series have approximately 39 total contracts:
+
+- **KXTOPMODEL**: ~23 contracts (one per AI model + an "Other" catch-all)
+- **KXLLM1**: ~16 contracts (one per AI company/org + an "Other" catch-all)
+
+The exact count varies as Kalshi adds or removes events. Markets are dynamically discovered at startup via `TradingLoop._bootstrap_market_data()` / `_discover_markets()` using paginated API calls for each series.
+
+### Signal Source
+
+The primary signal source is the LMSYS Chatbot Arena leaderboard (arena.ai, fallback: lmarena.ai). The settlement metric for KXTOPMODEL contracts is Rank(UB) from the "Text, Overall, No Style Control" category. For KXLLM1, the winning organization is derived from the top model's org.
+
+### Arena → Kalshi Contract Mapping
+
+Arena model/org names must resolve to Kalshi contract tickers. The mapping chain is:
+
+1. **Subtitle extraction** — contract names come from the Kalshi API `subtitle` field (or `yes_sub_title`, or parsed from `title`)
+2. **Alias lookup** — `_DEFAULT_ORG_ALIASES` maps Arena org names to product names (e.g., "Anthropic" → "Claude") for KXLLM1
+3. **Org name normalization** — `normalize_org_name()` strips common suffixes ("AI", "Labs", "DeepMind", "Research")
+4. **Fuzzy matching** — `thefuzz.fuzz.token_sort_ratio` at 0.90 threshold
+5. **Manual overrides** — `model_ticker_overrides` / `org_ticker_overrides` in `config/strategies/leaderboard_alpha.yaml`
+
+The `_resolve_ticker()` method tries exact match first, then the original name, then stripped variants, before falling back to fuzzy matching. This handles common Arena→Kalshi discrepancies like "Google DeepMind" → "Google" or "DeepSeek Research" → "DeepSeek".
+
+Mapping correctness is validated by `tests/unit/test_contract_mapping.py` against a fixture of all 39 contracts. If the test fails, the fix is usually to adjust `normalize_org_name`, add an alias, or add a manual override.
+
+## Operating Mode
+
+The system is designed for 24/7 paper trading operation via Docker (`docker-compose.yml` with `restart: unless-stopped`). Changes that could affect long-running stability — memory leaks, resource exhaustion, unbounded growth, error handling gaps — should be flagged.
+
 ## Default Operating Mode
 
 Assume the following unless the user explicitly instructs otherwise:

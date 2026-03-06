@@ -92,7 +92,7 @@ class FillEvent:
     is_paper: bool
     client_order_id: str
     kalshi_fill_id: str | None = None
-    filled_at: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
+    filled_at: datetime.datetime = field(default_factory=lambda: datetime.datetime.now(datetime.UTC))
 
 
 # Type alias for fill callbacks: strategy.on_fill receives fill dicts
@@ -155,7 +155,7 @@ class ExecutionEngine:
         In live mode, the order is sent to the Kalshi API.
         """
         client_order_id = self._generate_order_id(proposed)
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
         tracked = TrackedOrder(
             client_order_id=client_order_id,
@@ -200,7 +200,7 @@ class ExecutionEngine:
 
         if self._mode == ExecutionMode.PAPER:
             tracked.status = OrderStatus.CANCELLED
-            tracked.cancelled_at = datetime.datetime.utcnow()
+            tracked.cancelled_at = datetime.datetime.now(datetime.UTC)
             tracked.updated_at = tracked.cancelled_at
             logger.info("paper_order_cancelled", client_order_id=client_order_id)
             return True
@@ -212,7 +212,7 @@ class ExecutionEngine:
         try:
             self._api.cancel_order(tracked.kalshi_order_id)  # type: ignore[union-attr]
             tracked.status = OrderStatus.CANCELLED
-            tracked.cancelled_at = datetime.datetime.utcnow()
+            tracked.cancelled_at = datetime.datetime.now(datetime.UTC)
             tracked.updated_at = tracked.cancelled_at
             logger.info(
                 "live_order_cancelled",
@@ -240,7 +240,7 @@ class ExecutionEngine:
 
     def _execute_paper(self, tracked: TrackedOrder) -> ExecutionResult:
         """Simulate an instant fill at the proposed price."""
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
         # Calculate fees
         fee_result = self._fee_calc.taker_fee(tracked.price_cents, tracked.quantity)
@@ -284,7 +284,7 @@ class ExecutionEngine:
         """Submit order to the Kalshi API."""
         if self._api is None:
             tracked.status = OrderStatus.REJECTED
-            tracked.updated_at = datetime.datetime.utcnow()
+            tracked.updated_at = datetime.datetime.now(datetime.UTC)
             return ExecutionResult(success=False, order=tracked, error="No API client")
 
         # Build the API request
@@ -295,7 +295,7 @@ class ExecutionEngine:
             order_data = result.get("order", {})
             tracked.kalshi_order_id = order_data.get("order_id")
             tracked.status = OrderStatus.SUBMITTED
-            tracked.updated_at = datetime.datetime.utcnow()
+            tracked.updated_at = datetime.datetime.now(datetime.UTC)
 
             logger.info(
                 "live_order_submitted",
@@ -307,7 +307,7 @@ class ExecutionEngine:
 
         except KalshiAPIError as e:
             tracked.status = OrderStatus.REJECTED
-            tracked.updated_at = datetime.datetime.utcnow()
+            tracked.updated_at = datetime.datetime.now(datetime.UTC)
             logger.error(
                 "live_order_rejected",
                 client_order_id=tracked.client_order_id,

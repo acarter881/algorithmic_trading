@@ -301,23 +301,7 @@ def preflight(config_dir: str, execution_mode: str | None) -> None:
     except Exception as e:
         _fail("Kalshi API", str(e))
 
-    # 4. Target series market availability
-    if client is not None:
-        try:
-            series_market_counts = _collect_series_market_counts(client, config.leaderboard_alpha.target_series)
-            missing_series = [series for series, count in series_market_counts.items() if count < 1]
-            counts_detail = ", ".join(f"{series}:{count}" for series, count in series_market_counts.items())
-            if missing_series:
-                missing = ", ".join(missing_series)
-                _fail("Target series markets", f"missing={missing}; counts={counts_detail}")
-            else:
-                _pass("Target series markets", f"counts={counts_detail}")
-        except Exception as e:
-            _fail("Target series markets", str(e))
-    else:
-        _fail("Target series markets", "skipped: Kalshi API check failed")
-
-    # 5. Arena monitor
+    # 4. Arena monitor
     try:
         import httpx
 
@@ -331,7 +315,7 @@ def preflight(config_dir: str, execution_mode: str | None) -> None:
     except Exception as e:
         _fail("Arena monitor", str(e))
 
-    # 5. Target series market availability
+    # 5. Target series markets
     try:
         if client is None:
             _fail("Target series markets", "skipped because Kalshi API check failed")

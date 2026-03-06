@@ -201,7 +201,7 @@ class TradingRepository:
     @staticmethod
     def _today_as_datetime() -> datetime.datetime:
         """Return today (UTC) at midnight as a datetime (matches the DateTime column type)."""
-        return datetime.datetime.combine(datetime.datetime.utcnow().date(), datetime.time())
+        return datetime.datetime.combine(datetime.datetime.now(datetime.UTC).date(), datetime.time())
 
     def _update_daily_pnl_in_session(
         self,
@@ -262,7 +262,7 @@ class TradingRepository:
                 return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
             except ValueError:
                 logger.warning("fill_timestamp_parse_failed", filled_at=raw_filled_at)
-        return datetime.datetime.utcnow()
+        return datetime.datetime.now(datetime.UTC)
 
     @dataclass
     class _TickerPnlState:
@@ -356,7 +356,7 @@ class TradingRepository:
     ) -> list[DailyPnl]:
         """Fetch daily P&L rows for the last *days* days, optionally filtered by strategy."""
         cutoff = datetime.datetime.combine(
-            datetime.datetime.utcnow().date() - datetime.timedelta(days=days - 1),
+            datetime.datetime.now(datetime.UTC).date() - datetime.timedelta(days=days - 1),
             datetime.time(),
         )
         try:
@@ -379,7 +379,7 @@ class TradingRepository:
     ) -> list[Fill]:
         """Fetch fill records for the last *days* days."""
         cutoff = datetime.datetime.combine(
-            datetime.datetime.utcnow().date() - datetime.timedelta(days=days - 1),
+            datetime.datetime.now(datetime.UTC).date() - datetime.timedelta(days=days - 1),
             datetime.time(),
         )
         try:
