@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from autotrader.api.client import KalshiAPIClient, KalshiAPIError
+from autotrader.api.client import KalshiAPIClient, KalshiAPIError, Orderbook, OrderbookLevel
 from autotrader.execution.engine import ExecutionEngine, ExecutionMode, FillEvent, OrderStatus
 from autotrader.strategies.base import OrderUrgency, ProposedOrder
 
@@ -372,3 +372,178 @@ class TestFillEvent:
         )
         assert fill.kalshi_fill_id is None
         assert fill.filled_at is not None
+        assert fill.slippage_cents == 0
+
+
+# ── Orderbook-Based Paper Fills ─────────────────────────────────────────
+
+
+def _mock_orderbook(
+    ticker: str = "KXTOPMODEL-GPT5",
+    yes_bids: list[tuple[int, int]] | None = None,
+    no_bids: list[tuple[int, int]] | None = None,
+) -> Orderbook:
+    """Create a mock Orderbook with given (price, quantity) levels."""
+    return Orderbook(
+        ticker=ticker,
+        yes_bids=[OrderbookLevel(price=p, quantity=q) for p, q in (yes_bids or [])],
+        yes_asks=[],
+        no_bids=[OrderbookLevel(price=p, quantity=q) for p, q in (no_bids or [])],
+        no_asks=[],
+    )
+
+
+def _orderbook_engine(orderbook: Orderbook | None = None) -> ExecutionEngine:
+    """Create a paper engine with orderbook fill mode and a mock API."""
+    api = MagicMock(spec=KalshiAPIClient)
+    if orderbook is not None:
+        api.get_orderbook.return_value = orderbook
+    return ExecutionEngine(
+        mode=ExecutionMode.PAPER,
+        api_client=api,
+        paper_fill_mode="orderbook",
+    )
+
+
+class TestOrderbookFill:
+    """Tests for orderbook-based paper fill simulation."""
+
+    async def test_full_fill_yes_buy(self) -> None:
+        """YES buy fills fully when book has sufficient liquidity."""
+        # no_bids at 55 (yes_ask=45) and 50 (yes_ask=50), qty 10 each
+        ob = _mock_orderbook(no_bids=[(55, 10), (50, 10)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert result.success
+        assert result.order.status == OrderStatus.FILLED
+        assert result.order.filled_quantity == 5
+        # All 5 should fill at yes_ask=45 (from no_bid=55)
+        assert fills[0]["price_cents"] == 45
+        assert fills[0]["count"] == 5
+        assert fills[0]["slippage_cents"] < 0  # Better than limit
+
+    async def test_full_fill_walking_book(self) -> None:
+        """YES buy walks multiple levels to fill."""
+        # no_bids: 55 (yes_ask=45, qty=3), 50 (yes_ask=50, qty=10)
+        ob = _mock_orderbook(no_bids=[(55, 3), (50, 10)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert result.success
+        assert result.order.filled_quantity == 5
+        # VWAP: (3*45 + 2*50) / 5 = (135 + 100) / 5 = 47
+        assert fills[0]["price_cents"] == 47
+        assert fills[0]["slippage_cents"] == 47 - 50  # -3 (better than limit)
+
+    async def test_partial_fill_thin_book(self) -> None:
+        """Only fills available quantity when book is thin."""
+        # Only 3 contracts available at or below limit
+        ob = _mock_orderbook(no_bids=[(55, 3)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=10))
+        assert result.success
+        assert result.order.filled_quantity == 3
+        assert fills[0]["count"] == 3
+
+    async def test_no_fill_empty_book(self) -> None:
+        """Order rejected when orderbook is empty."""
+        ob = _mock_orderbook(no_bids=[])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert not result.success
+        assert result.order.status == OrderStatus.REJECTED
+        assert len(fills) == 0
+
+    async def test_no_fill_above_limit(self) -> None:
+        """Order rejected when all asks are above the limit price."""
+        # no_bid=40 → yes_ask=60, which is above our limit of 50
+        ob = _mock_orderbook(no_bids=[(40, 10)])
+        engine = _orderbook_engine(ob)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert not result.success
+        assert result.order.status == OrderStatus.REJECTED
+
+    async def test_no_side_buy(self) -> None:
+        """NO buy uses yes_bids to derive no_asks."""
+        # yes_bids at 60 (no_ask=40, qty=10) → good for NO buyer at limit 45
+        ob = _mock_orderbook(yes_bids=[(60, 10)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="no", price_cents=45, quantity=3))
+        assert result.success
+        assert result.order.filled_quantity == 3
+        assert fills[0]["price_cents"] == 40
+        assert fills[0]["side"] == "no"
+
+    async def test_fallback_on_api_error(self) -> None:
+        """Falls back to instant fill when orderbook fetch fails."""
+        api = MagicMock(spec=KalshiAPIClient)
+        api.get_orderbook.side_effect = KalshiAPIError("timeout", status_code=500)
+        engine = ExecutionEngine(
+            mode=ExecutionMode.PAPER,
+            api_client=api,
+            paper_fill_mode="orderbook",
+        )
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert result.success
+        assert result.order.status == OrderStatus.FILLED
+        # Instant fill — full quantity at proposed price
+        assert result.order.filled_quantity == 5
+        assert fills[0]["price_cents"] == 50
+
+    async def test_instant_mode_unchanged(self) -> None:
+        """Default instant mode still works identically."""
+        engine = _paper_engine()
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=42, quantity=5))
+        assert result.success
+        assert result.order.status == OrderStatus.FILLED
+        assert result.order.filled_quantity == 5
+        assert fills[0]["price_cents"] == 42
+        assert fills[0]["slippage_cents"] == 0
+
+    async def test_fill_callback_receives_slippage(self) -> None:
+        """Fill callback dict includes slippage_cents."""
+        ob = _mock_orderbook(no_bids=[(55, 10)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        await engine.submit(_order(side="yes", price_cents=50, quantity=5))
+        assert "slippage_cents" in fills[0]
+        # yes_ask=45, limit=50, so slippage=45-50=-5
+        assert fills[0]["slippage_cents"] == -5
+
+    async def test_limit_price_respected(self) -> None:
+        """Levels above the limit price are not filled."""
+        # Two levels: 55 (yes_ask=45) and 45 (yes_ask=55)
+        # With limit=50, only the first level should fill
+        ob = _mock_orderbook(no_bids=[(55, 5), (45, 5)])
+        engine = _orderbook_engine(ob)
+        fills: list[dict] = []
+        engine.on_fill(fills.append)
+
+        result = await engine.submit(_order(side="yes", price_cents=50, quantity=10))
+        assert result.success
+        # Only 5 filled (from level at yes_ask=45), the other level at yes_ask=55 exceeds limit
+        assert result.order.filled_quantity == 5
+        assert fills[0]["count"] == 5

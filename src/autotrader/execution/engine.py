@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from autotrader.api.client import KalshiAPIClient, KalshiAPIError, OrderRequest
+from autotrader.api.client import KalshiAPIClient, KalshiAPIError, Orderbook, OrderRequest
 from autotrader.config.models import ExecutionMode as ExecutionMode
 from autotrader.utils.fees import FeeCalculator
 
@@ -92,6 +92,7 @@ class FillEvent:
     is_paper: bool
     client_order_id: str
     kalshi_fill_id: str | None = None
+    slippage_cents: int = 0
     filled_at: datetime.datetime = field(default_factory=lambda: datetime.datetime.now(datetime.UTC))
 
 
@@ -119,10 +120,12 @@ class ExecutionEngine:
         mode: ExecutionMode = ExecutionMode.PAPER,
         api_client: KalshiAPIClient | None = None,
         fee_calculator: FeeCalculator | None = None,
+        paper_fill_mode: str = "instant",
     ) -> None:
         self._mode = mode
         self._api = api_client
         self._fee_calc = fee_calculator or FeeCalculator()
+        self._paper_fill_mode = paper_fill_mode
         self._fill_callbacks: list[FillCallback] = []
         self._orders: dict[str, TrackedOrder] = {}  # client_order_id → TrackedOrder
 
@@ -239,7 +242,27 @@ class ExecutionEngine:
     # ── Paper execution ───────────────────────────────────────────────
 
     def _execute_paper(self, tracked: TrackedOrder) -> ExecutionResult:
-        """Simulate an instant fill at the proposed price."""
+        """Simulate a paper fill.
+
+        When ``paper_fill_mode`` is ``"orderbook"`` and an API client is
+        available, fetches the live orderbook and simulates a realistic fill
+        (VWAP, partial fills, slippage).  Falls back to instant fill on
+        failure or when no API client is configured.
+        """
+        if self._paper_fill_mode == "orderbook" and self._api is not None:
+            try:
+                return self._simulate_orderbook_fill(tracked)
+            except Exception:
+                logger.warning(
+                    "orderbook_fill_fallback",
+                    client_order_id=tracked.client_order_id,
+                    ticker=tracked.ticker,
+                    reason="orderbook fetch failed, falling back to instant fill",
+                )
+        return self._execute_instant_fill(tracked)
+
+    def _execute_instant_fill(self, tracked: TrackedOrder) -> ExecutionResult:
+        """Simulate an instant full fill at the proposed price."""
         now = datetime.datetime.now(datetime.UTC)
 
         # Calculate fees
@@ -277,6 +300,134 @@ class ExecutionEngine:
         self._emit_fill(fill)
 
         return ExecutionResult(success=True, order=tracked)
+
+    def _simulate_orderbook_fill(self, tracked: TrackedOrder) -> ExecutionResult:
+        """Simulate a fill using the live orderbook for realistic pricing.
+
+        Walks the book to determine how much quantity can be filled at or
+        below the proposed limit price.  Computes the volume-weighted
+        average price (VWAP) and logs slippage.
+
+        If the book is empty or has no liquidity at the limit price, the
+        order is rejected.  Partial fills are supported — the order fills
+        whatever quantity is available.
+        """
+        assert self._api is not None
+        now = datetime.datetime.now(datetime.UTC)
+
+        orderbook = self._api.get_orderbook(tracked.ticker)
+        filled_qty, vwap, slippage = self._walk_book(
+            orderbook=orderbook,
+            side=tracked.side,
+            quantity=tracked.quantity,
+            limit_price=tracked.price_cents,
+        )
+
+        if filled_qty == 0:
+            tracked.status = OrderStatus.REJECTED
+            tracked.updated_at = now
+            logger.info(
+                "paper_orderbook_no_liquidity",
+                client_order_id=tracked.client_order_id,
+                ticker=tracked.ticker,
+                side=tracked.side,
+                limit_price=tracked.price_cents,
+                quantity=tracked.quantity,
+            )
+            return ExecutionResult(
+                success=False,
+                order=tracked,
+                error="no orderbook liquidity at limit price",
+            )
+
+        # Calculate fees on the VWAP fill price
+        fee_result = self._fee_calc.taker_fee(vwap, filled_qty)
+
+        tracked.filled_quantity = filled_qty
+        tracked.status = OrderStatus.FILLED
+        tracked.filled_at = now
+        tracked.updated_at = now
+
+        is_partial = filled_qty < tracked.quantity
+        logger.info(
+            "paper_orderbook_filled",
+            client_order_id=tracked.client_order_id,
+            ticker=tracked.ticker,
+            side=tracked.side,
+            proposed_price=tracked.price_cents,
+            fill_price=vwap,
+            slippage=slippage,
+            quantity_requested=tracked.quantity,
+            quantity_filled=filled_qty,
+            partial=is_partial,
+            fee=fee_result.total_fee_cents,
+        )
+
+        fill = FillEvent(
+            ticker=tracked.ticker,
+            side=tracked.side,
+            action="buy",
+            count=filled_qty,
+            price_cents=vwap,
+            fee_cents=fee_result.total_fee_cents,
+            is_taker=True,
+            is_paper=True,
+            client_order_id=tracked.client_order_id,
+            slippage_cents=slippage,
+            filled_at=now,
+        )
+        self._emit_fill(fill)
+
+        return ExecutionResult(success=True, order=tracked)
+
+    @staticmethod
+    def _walk_book(
+        orderbook: Orderbook,
+        side: str,
+        quantity: int,
+        limit_price: int,
+    ) -> tuple[int, int, int]:
+        """Walk the orderbook to simulate a fill.
+
+        Returns ``(filled_quantity, vwap_cents, slippage_cents)``.
+
+        For YES buys: the available asks are derived from NO bids
+        (yes_ask = 100 - no_bid_price).  We sort by best (lowest) ask first.
+
+        For NO buys: the available asks are derived from YES bids
+        (no_ask = 100 - yes_bid_price).  We sort by best (lowest) ask first.
+        """
+
+        if side == "yes":
+            # YES asks come from NO bids: yes_ask = 100 - no_bid_price
+            # Higher no_bid_price → lower yes_ask → better price for buyer
+            levels = sorted(orderbook.no_bids, key=lambda lvl: lvl.price, reverse=True)
+        else:
+            # NO asks come from YES bids: no_ask = 100 - yes_bid_price
+            # Higher yes_bid_price → lower no_ask → better price for buyer
+            levels = sorted(orderbook.yes_bids, key=lambda lvl: lvl.price, reverse=True)
+
+        remaining = quantity
+        total_cost = 0
+        for level in levels:
+            ask_price = 100 - level.price
+            if ask_price > limit_price:
+                break
+            if ask_price <= 0:
+                continue
+            take = min(remaining, level.quantity)
+            total_cost += take * ask_price
+            remaining -= take
+            if remaining == 0:
+                break
+
+        filled_qty = quantity - remaining
+        if filled_qty == 0:
+            return 0, 0, 0
+
+        vwap = total_cost // filled_qty
+        slippage = vwap - limit_price
+        return filled_qty, vwap, slippage
 
     # ── Live execution ────────────────────────────────────────────────
 
@@ -373,6 +524,7 @@ class ExecutionEngine:
             "is_paper": fill.is_paper,
             "client_order_id": fill.client_order_id,
             "kalshi_fill_id": fill.kalshi_fill_id,
+            "slippage_cents": fill.slippage_cents,
             "filled_at": fill.filled_at.isoformat(),
         }
         for cb in self._fill_callbacks:
