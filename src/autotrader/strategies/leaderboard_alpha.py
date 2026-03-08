@@ -458,6 +458,7 @@ class LeaderboardAlphaStrategy(Strategy):
             models_unmapped=len(unmapped_models),
             orgs_mapped=len(mapped_orgs),
             orgs_unmapped=len(unmapped_orgs),
+            arena_orgs_found=sorted(seen_orgs),
         )
         if unmapped_models or unmapped_orgs:
             logger.warning(
@@ -500,6 +501,8 @@ class LeaderboardAlphaStrategy(Strategy):
 
         total_contracts = len(self._ticker_model_names)
         total_mapped = len(ticker_to_arena)
+        total_sibling = 0
+        total_unmatched = 0
 
         lines = [
             "",
@@ -527,12 +530,17 @@ class LeaderboardAlphaStrategy(Strategy):
                     suffix_key = f"{parts[0]}-{parts[2]}" if len(parts) == 3 else ""
                     sibling_arena = suffix_to_arena.get(suffix_key)
                     if sibling_arena:
-                        lines.append(f"    {t:45s} ({contract_name:30s})    (not traded, mapped via other event)")
+                        lines.append(f"    {t:45s} ({contract_name:30s})  ~ {sibling_arena} (via sibling event)")
+                        total_sibling += 1
                     else:
-                        lines.append(f"    {t:45s} ({contract_name:30s})    --")
+                        lines.append(f"    {t:45s} ({contract_name:30s})    -- (no Arena match)")
+                        total_unmatched += 1
             lines.append("")
 
-        lines.append(f"  {total_mapped} of {total_contracts} contracts actively mapped")
+        lines.append(
+            f"  {total_contracts} contracts: {total_mapped} actively mapped, "
+            f"{total_sibling} covered via sibling event, {total_unmatched} no Arena match"
+        )
 
         # ── Unmapped Arena entries ────────────────────────────────────────
         if unmapped_models or unmapped_orgs:
